@@ -22,7 +22,40 @@ const CHEM_OPTIONS = [
 
 const FRONT_AREA = 'หน้าบ้าน (ติดเลขที่บ้าน)';
 
-// ---- helper: base URL ของ GAS (primary -> backup -> server env) ----
+/* ---------- ✨ helpers เพื่อแสดง ID ยาวให้สวย + คัดลอกได้ ---------- */
+
+function formatId(value, head = 10, tail = 6) {
+  if (!value) return '-';
+  const s = String(value);
+  return s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s;
+}
+
+function CopyableField({ label, value, className = '' }) {
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(String(value ?? '')); } catch {}
+  };
+  return (
+    <div className={`flex items-center gap-2 flex-wrap ${className}`}>
+      {label && <span className="text-sm text-neutral-300">{label}</span>}
+      <span
+        className="font-mono text-xs px-2 py-1 rounded-md bg-neutral-800 max-w-[70vw] sm:max-w-[48ch] overflow-hidden text-ellipsis whitespace-nowrap"
+        title={String(value ?? '')}
+      >
+        {formatId(value)}
+      </span>
+      <button
+        type="button"
+        onClick={copy}
+        className="text-xs px-2 py-1 rounded-md bg-neutral-700 hover:bg-neutral-600"
+      >
+        คัดลอก
+      </button>
+    </div>
+  );
+}
+
+/* ---------------- GAS base & mapping helpers ---------------- */
+
 function getGasBase(){
   const cands = [
     process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY,
@@ -33,7 +66,6 @@ function getGasBase(){
   return String(cands[0]).replace(/\/+$/,'');
 }
 
-// ---- helper: เรียก setServiceIndex (fire & forget) ----
 async function setServiceIndex({ visitId, serviceId, date='', customer='', fileId='', sheet='', row='' }){
   const base = getGasBase();
   if (!base || !visitId || !serviceId) return;
@@ -46,7 +78,6 @@ async function setServiceIndex({ visitId, serviceId, date='', customer='', fileI
   try {
     await fetch(`${base}/exec?${qs.toString()}`, { method:'GET', redirect:'follow' });
   } catch (err) {
-    // ไม่ให้ล้ม flow หลัก
     console.warn('setServiceIndex failed:', err);
   }
 }
@@ -258,17 +289,38 @@ export default function Visit(){
 
       // === สร้าง Service Report ===
       const res = await createServiceReport(payload);
-      if (!res?.ok) throw new Error(res?.error || 'บันทึกรายงานไม่สำเร็จ');
-      setResult(res.result);
+      if (!res || res.ok === false) {
+        throw new Error(res?.error || 'บันทึกรายงานไม่สำเร็จ');
+      }
 
-      // === บันทึก mapping visitId -> serviceId ไปที่ GAS ===
+      // รองรับหลายทรงผลลัพธ์จาก GAS
+      const serviceId =
+        res?.result?.service_id ??
+        res?.result?.id ??
+        res?.service_id ??
+        res?.id ??
+        null;
+
+      const reportUrl =
+        res?.result?.report_url ??
+        res?.report_url ??
+        null;
+
+      // ถ้ายังหาไม่ได้ ให้แจ้งรายละเอียดคร่าว ๆ ไว้ debug
+      if (!serviceId) {
+        console.warn('createServiceReport raw response =', res);
+        throw new Error('createServiceReport: ไม่มี service_id ในผลลัพธ์');
+      }
+
+      // เก็บผลแบบ normalized
+      setResult({ service_id: serviceId, report_url: reportUrl });
+
+      // === mapping visitId -> serviceId ไปที่ GAS ===
       await setServiceIndex({
         visitId: String(visitId || ''),
-        serviceId: String(res.result.service_id || ''),
-        // meta ช่วยตรวจย้อนหลัง (ใส่เพิ่มได้ถ้ามี)
+        serviceId: String(serviceId),
         date: new Date().toISOString().slice(0,10),
         customer: payload.customerName || ''
-        // fileId/sheet/row: ถ้ามีตอนเข้าหน้านี้สามารถส่งติดไปด้วยได้
       });
 
       // === บันทึกเคมี ===
@@ -284,7 +336,9 @@ export default function Visit(){
       ];
       if (chemList.length) {
         const chemRes = await appendChemicals(res.result.service_id, chemList);
-        if (!chemRes?.ok) throw new Error(chemRes?.error || 'บันทึกเคมีไม่สำเร็จ');
+        if (!chemRes || chemRes.ok === false) {
+          throw new Error(chemRes?.error || 'บันทึกเคมีไม่สำเร็จ');
+        }
       }
 
       setDone(true);
@@ -297,7 +351,10 @@ export default function Visit(){
   };
 
   return (
-    <AppShell title={`บันทึกงาน: ${visitId || ''}`}>
+    <AppShell title="บันทึกงาน">
+      {/* แถบหัวเรื่อง: แสดง visitId แบบย่อ + คัดลอกได้ */}
+      <CopyableField label="เลขงาน:" value={visitId} className="mb-2" />
+
       <form onSubmit={submit} className="space-y-4">
         {/* toggle มี/ไม่มีท่อ */}
         <div className="rounded-2xl bg-neutral-800 p-3 flex items-center gap-3">
@@ -354,25 +411,31 @@ export default function Visit(){
         {done && result && (
           <div className="mt-3 rounded-2xl bg-neutral-800 p-4 text-sm text-white space-y-2">
             <div className="font-semibold">สรุปการบันทึก</div>
-            <div className="flex items-center gap-2">
-              <span className="text-neutral-300">Service ID:</span>
-              <code className="px-2 py-1 rounded bg-neutral-900">{result.service_id}</code>
-              <button type="button" onClick={()=>copy(result.service_id)} className="px-2 py-1 rounded bg-neutral-700">คัดลอก</button>
-            </div>
+
+            {/* Service ID แสดงแบบย่อ + คัดลอกได้ */}
+            <CopyableField label="Service ID:" value={result.service_id} />
+
             <div className="flex items-center gap-2">
               <span className="text-neutral-300">รายงาน:</span>
               <Link
                 href={`/report/${encodeURIComponent(result.service_id)}`}
-                className="underline text-emerald-400"
+                className="underline text-emerald-400 break-all"
               >
                 เปิดดูรายงาน
               </Link>
             </div>
+
             {result.report_url && (
               <div className="flex items-center gap-2 text-neutral-300">
                 <span>ไฟล์ PDF:</span>
-                <a href={result.report_url} target="_blank" rel="noreferrer" className="underline">
-                  เปิดไฟล์ PDF เดิม
+                <a
+                  href={result.report_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline break-all"
+                  title={result.report_url}
+                >
+                  {formatId(result.report_url, 24, 12)}
                 </a>
               </div>
             )}

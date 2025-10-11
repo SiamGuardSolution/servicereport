@@ -1,8 +1,11 @@
 // pages/tech/jobs.jsx
-import React from 'react';
+import React, { useEffect } from 'react';
+import { useRouter } from 'next/router';
 import AppShell from '@/components/AppShell';
 import Link from 'next/link';
 import { fetchMyJobs } from '@/lib/api';
+
+const UID_KEYS = ['sg.staffUid', 'staffUid', 'uid', 'SG_UID'];
 
 function todayTH() {
   // วันนี้ตามเวลาไทย (กันปัญหา UTC ข้ามวัน)
@@ -30,16 +33,43 @@ export async function getServerSideProps(ctx) {
 export default function JobsPage({ data, q }) {
   const general = data?.general ?? [];
   const service = data?.service ?? [];
+  const router = useRouter();
+
+  // ถ้า URL ยังไม่มี uid แต่ localStorage มี → เติม uid แล้ว navigate ใหม่
+  useEffect(() => {
+    // ฝั่งเซิร์ฟเวอร์ไม่มี localStorage
+    if (typeof window === 'undefined') return;
+
+    const hasUidInUrl =
+      (typeof router.query.uid === 'string' && router.query.uid.length > 0) ||
+      (q?.uid && q.uid.length > 0);
+
+    if (hasUidInUrl) return;
+
+    // หา UID จาก localStorage ตามคีย์ยอดนิยม
+    const u = UID_KEYS.map(k => localStorage.getItem(k)).find(Boolean);
+    if (!u) return; // ยังไม่ได้ตั้งค่า → ให้หน้าแสดงเตือนต่อไป
+
+    const params = new URLSearchParams(router.asPath.split('?')[1] || '');
+    params.set('uid', u);
+    // ไม่ใช้ shallow เพื่อให้ GSSP ทำงานใหม่ด้วย uid ที่เติมเข้าไป
+    router.replace(`${router.pathname}?${params.toString()}`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.pathname, router.asPath]); // ใช้ asPath เพื่อจับการเปลี่ยน query
 
   return (
     <AppShell title="งานของฉัน">
-      {!data?.ok && <div className="text-red-400 text-sm mb-3">โหลดไม่ได้: {data?.error || '-'}</div>}
+      {!data?.ok && (
+        <div className="text-red-400 text-sm mb-3">
+          โหลดไม่ได้: {data?.error || '-'} {(!q?.uid || q.uid === '') && '(กรุณาตั้งค่า UID ที่เมนูตั้งค่า)'}
+        </div>
+      )}
 
       {/* แถบ debug สั้น ๆ */}
       <div className="text-xs text-neutral-400 mb-3">
         วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •
         ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •
-        แหล่งข้อมูล: 
+        แหล่งข้อมูล:
         <span className="ml-1">ทั่วไป={data?.sources?.general?.name || '-'}</span>,{' '}
         <span>Service={data?.sources?.service?.name || '-'}</span>
       </div>

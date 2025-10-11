@@ -1,57 +1,110 @@
 // pages/report/[serviceId].jsx
-/* SSR version */
 import React from "react";
 
-/** ---------- SSR: ดึงข้อมูลก่อนเรนเดอร์ ---------- */
-function getServiceReport_(serviceId){
-  try {
-    if (!serviceId) return { ok:false, error:'missing id' };
-
-    const ss = SpreadsheetApp.openById(SS_ID);
-    const sh = ss.getSheetByName(REPORT_SHEET);
-    if (!sh) return { ok:false, error:'missing sheet '+REPORT_SHEET };
-
-    const values = sh.getDataRange().getValues();
-    const head = values[0].map(String);
-    const rows = values.slice(1);
-
-    const H = Object.fromEntries(head.map((h,i)=>[h, i]));
-    const col = (nameArr) => {
-      for (var n of nameArr) if (H[n] != null) return H[n];
-      return null;
-    };
-
-    const cSID  = col(['Service ID','service_id']);
-    if (cSID == null) return { ok:false, error:'missing Service ID column' };
-
-    const row = rows.find(r => String(r[cSID]).trim() === serviceId);
-    if (!row) return { ok:false, error:'not found', serviceId };
-
-    const get = (names, d='') => {
-      const idx = col(names);
-      return idx == null ? d : (row[idx] ?? d);
-    };
-    const parse = (s,fb)=>{ try{return s?JSON.parse(s):fb;}catch(_){return fb;} };
-
-    return {
-      ok: true,
-      serviceId,
-      visitId:      String(get(['Visit ID','visit_id'], '')),
-      createdAt:    String(get(['Created At','วันที่'], '')),
-      staffName:    String(get(['Staff','ช่างผู้ปฏิบัติงาน'], '')),
-      customerName: String(get(['Customer','ลูกค้า'], '')),
-      address:      String(get(['Address','ที่อยู่'], '')),
-      notes:        String(get(['Notes','หมายเหตุ'], '')),
-      pdfUrl:       String(get(['PdfUrl','ไฟล์PDF'], '')),
-      signatureUrl: String(get(['SignatureUrl','ลายเซ็น'], '')),
-      items:        parse(String(get(['items','รายการ'], '')), [])
-    };
-  } catch (err) {
-    return { ok:false, error:String(err), where:'getServiceReport_' };
-  }
+/** ---------------------------
+ * Helper: GAS exec base URL
+ * --------------------------- */
+function getExecBase() {
+  const base =
+    process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY ||
+    process.env.NEXT_PUBLIC_GAS_EXEC ||
+    process.env.NEXT_PUBLIC_GAS_EXEC_BACKUP ||
+    process.env.GAS_EXEC ||
+    process.env.NEXT_PUBLIC_API_BASE ||
+    "";
+  return String(base || "").replace(/\/+$/, ""); // ตัด / ท้าย
 }
 
-/** ---------- หน้าแสดงผล ---------- */
+/** ---------------------------
+ * Adapter: รวมสคีมาเก่า/ใหม่ให้เป็นรูปเดียวกับ UI
+ * --------------------------- */
+function adaptReportPayload(json) {
+  // json รูปแบบ { ok, header, items, photos }
+  const h = json?.header || {};
+  const svcId = h.service_id || h.logId || "";
+
+  // map ฟิลด์หลัก (เผื่อชื่อใหม่/เก่า)
+  const payload = {
+    serviceId: svcId,
+    visitId: h.visit_id || h.visitId || "",
+    createdAt: h.date || h.serviceDate || h.created_at || "",
+    staffName: h.staff_name || h.technicianName || "",
+    customerName: h.customer_name || h.customerName || "",
+    address: h.address || "",
+    notes: h.notes || h.summary || "",
+    signatureUrl: h.signature_url || h.customerSignatureUrl || "",
+    pdfUrl: h.report_url || h.pdfUrl || "",
+  };
+
+  // รวม items+photos ตาม zone -> [{area, chemicals, photos}]
+  const byZone = new Map();
+  const ensure = (z) => {
+    const key = z || "ทั่วไป";
+    if (!byZone.has(key)) byZone.set(key, { area: key, chemicals: [], photos: [] });
+    return byZone.get(key);
+  };
+
+  // Chemicals: [{ zone, name, qty, link, remark }]
+  (json?.items || []).forEach((it) => {
+    const row = ensure(it.zone);
+    row.chemicals.push({
+      name: it.name || "",
+      qty: it.qty || "",
+      unit: it.unit || "", // เผื่ออนาคต
+      link: it.link || "",
+      remark: it.remark || "",
+    });
+  });
+
+  // Photos: [{ zone, url, caption, taken_at }]
+  (json?.photos || []).forEach((p) => {
+    const row = ensure(p.zone);
+    row.photos.push({
+      url: p.url,
+      thumb: p.url, // ถ้ามีตัวย่อจะสลับมาใช้ได้
+      caption: p.caption || "",
+      taken_at: p.taken_at || "",
+    });
+  });
+
+  return { ...payload, items: Array.from(byZone.values()) };
+}
+
+/** ---------------------------
+ * SSR: ดึงข้อมูลรายงานจาก GAS
+ * --------------------------- */
+export async function getServerSideProps(ctx) {
+  const serviceId = String(ctx.params?.serviceId || "");
+  const base = getExecBase();
+
+  let data = null;
+  let error = null;
+
+  if (!serviceId) {
+    return { props: { serviceId, data: null, error: "missing id" } };
+  }
+
+  try {
+    const url = `${base}?route=report-by-id&service_id=${encodeURIComponent(
+      serviceId
+    )}`;
+    const res = await fetch(url, { redirect: "follow" });
+    const json = await res.json();
+
+    if (!json?.ok) {
+      throw new Error(json?.error || `HTTP ${res.status}`);
+    }
+    data = adaptReportPayload(json);
+  } catch (e) {
+    error = String(e?.message || e);
+  }
+
+  return { props: { serviceId, data, error } };
+}
+
+/** ---------------------------
+ * UI
+ * --------------------------- */
 export default function ServiceReportPage({ serviceId, data, error }) {
   if (error) {
     return (
@@ -64,16 +117,6 @@ export default function ServiceReportPage({ serviceId, data, error }) {
     return <div style={{ padding: 16 }}>ไม่พบข้อมูลรายงาน</div>;
   }
 
-  // รองรับทั้งกรณีที่ Apps Script ส่ง {ok:false,...} มา
-  if (data.ok === false) {
-    return (
-      <div style={{ padding: 16, color: "#f66" }}>
-        โหลดไม่สำเร็จ: {data.error || "unknown"}
-      </div>
-    );
-  }
-
-  // --------- map ฟิลด์ที่ใช้แสดง ----------
   const {
     serviceId: id = serviceId,
     visitId,
@@ -82,9 +125,9 @@ export default function ServiceReportPage({ serviceId, data, error }) {
     customerName,
     address,
     notes,
-    items = [],        // [{area, chemicals:[{name,qty,unit}], photos:[{url,thumb}]}, ...]
-    signatureUrl,      // URL รูปลายเซ็น
-    pdfUrl
+    items = [],
+    signatureUrl,
+    pdfUrl,
   } = data;
 
   return (
@@ -136,7 +179,6 @@ export default function ServiceReportPage({ serviceId, data, error }) {
                     rel="noreferrer"
                     className="block rounded overflow-hidden border border-neutral-700"
                   >
-                    {/* ถ้าตั้ง CORS ถูกต้องสามารถเปลี่ยนเป็น next/image ได้ */}
                     <img src={p.thumb || p.url} alt={`photo-${i}`} />
                   </a>
                 ))}
