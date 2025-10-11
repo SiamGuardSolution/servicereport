@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Siamguard – Field App</title>
-  <!-- โฮสต์ใต้ /servicereport -->
   <base href="/servicereport/">
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
@@ -13,6 +12,7 @@
     input,select,button{width:100%;padding:10px;font-size:16px}
     button[disabled]{opacity:.6}
     .hint{color:#666;font-size:14px}
+    .error{color:#c00}
   </style>
 </head>
 <body>
@@ -20,38 +20,52 @@
   <div id="status" class="hint">กำลังตรวจสอบ ...</div>
 
   <form id="form" style="display:none">
-    <label>ชื่อที่แสดง</label><input id="display" readonly />
+    <label>ชื่อที่แสดง</label>
+    <input id="display" readonly />
+
     <label>เบอร์โทร</label>
-    <input id="phone" placeholder="08xxxxxxxx" inputmode="tel" />
+    <input id="phone" placeholder="08xxxxxxxx" inputmode="tel" autocomplete="tel" />
+    <div id="phoneHint" class="hint"></div>
+
     <label>ทีม</label>
     <select id="team"><option value="">-- เลือกทีม --</option></select>
+
     <button id="btnSave" type="submit" style="margin-top:12px">บันทึก</button>
   </form>
 
   <script>
-  // TODO: ใส่ค่าจริงของคุณ
+  // ====== ตั้งค่า ======
   const LIFF_ID = '2007877821-J8jyx6YN';
   const GAS = 'https://script.google.com/macros/s/AKfycbyJucHRq6vbApfOgxelVKpsa0rGgKv_tKbrui--_CJsiXGqvaEqEvfeubSOize3UMaU/exec';
 
-  function setStatus(msg){ document.getElementById('status').textContent = msg || ''; }
+  // ====== Utils ======
+  function setStatus(msg, isError=false){
+    const el = document.getElementById('status');
+    el.textContent = msg || '';
+    el.className = (isError ? 'hint error' : 'hint');
+  }
   function setSaving(b){ document.getElementById('btnSave').disabled = !!b; }
 
+  // keep 0 นำหน้า + บังคับให้เหลือ 10 หลัก
+  function normalizePhone(p){
+    let s = String(p||'').replace(/\D/g,''); // เอาแต่ตัวเลข
+    if (s.length === 9) s = '0' + s;         // 9 หลัก → เติม 0 นำหน้า
+    if (s.length > 10) s = s.slice(-10);     // เกิน 10 → เอา 10 หลักท้าย
+    // กันเคสขึ้นต้นไม่ใช่ 0 แต่ยาว 10
+    if (s.length === 10 && s[0] !== '0') s = '0' + s.slice(1);
+    return s;
+  }
+
   async function loadTeams(){
-    try{
-      const r = await fetch(GAS + '?route=teams.list', { cache:'no-store' });
-      const j = await r.json();
-      if(j.ok){
-        const sel = document.getElementById('team');
-        (j.data||[]).filter(t=>t.active).forEach(t=>{
-          const o = document.createElement('option');
-          o.value = t.team_name; o.textContent = t.team_name; sel.appendChild(o);
-        });
-      } else {
-        setStatus('โหลดรายชื่อทีมไม่สำเร็จ');
-      }
-    }catch(err){
-      setStatus('โหลดรายชื่อทีมผิดพลาด: ' + String(err));
-    }
+    const r = await fetch(GAS + '?route=teams.list', { cache:'no-store' });
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'load teams failed');
+    const sel = document.getElementById('team');
+    (j.data||[]).filter(t=>t.active).forEach(t=>{
+      const o = document.createElement('option');
+      o.value = t.team_name; o.textContent = t.team_name;
+      sel.appendChild(o);
+    });
   }
 
   (async ()=>{
@@ -59,7 +73,7 @@
       await liff.init({ liffId: LIFF_ID });
 
       if (!liff.isLoggedIn()) { liff.login(); return; }
-      if (!liff.isInClient()) { setStatus('กรุณาเปิดลิงก์นี้ในแอป LINE'); return; }
+      if (!liff.isInClient()) { setStatus('กรุณาเปิดลิงก์นี้ในแอป LINE', true); return; }
 
       const prof = await liff.getProfile();
       document.getElementById('display').value = prof.displayName || '';
@@ -68,17 +82,34 @@
       await loadTeams();
       document.getElementById('form').style.display = 'block';
 
-      // autofill phone จาก localStorage
-      const savedPhone = localStorage.getItem('my_phone')||'';
-      if(savedPhone) document.getElementById('phone').value = savedPhone;
+      // autofill phone จาก localStorage (พร้อม normalize)
+      const saved = localStorage.getItem('my_phone')||'';
+      if(saved){
+        const n = normalizePhone(saved);
+        document.getElementById('phone').value = n;
+      }
+
+      // แสดงตัวอย่าง/เตือนทันทีขณะพิมพ์
+      const phoneEl = document.getElementById('phone');
+      const phoneHint = document.getElementById('phoneHint');
+      phoneEl.addEventListener('input', () => {
+        const n = normalizePhone(phoneEl.value);
+        phoneHint.textContent = n ? `จะบันทึกเป็น: ${n}` : '';
+      });
 
       document.getElementById('form').addEventListener('submit', async (e)=>{
         e.preventDefault();
 
-        const phone = document.getElementById('phone').value.trim();
+        // normalize เบอร์และสะท้อนกลับให้ผู้ใช้เห็น
+        let phone = normalizePhone(document.getElementById('phone').value);
+        document.getElementById('phone').value = phone;
+        phoneHint.textContent = phone ? `จะบันทึกเป็น: ${phone}` : '';
+
         const team  = document.getElementById('team').value.trim();
 
-        if (!team){ setStatus('กรุณาเลือกทีม'); return; }
+        if (!team){ setStatus('กรุณาเลือกทีม', true); return; }
+        if (phone && phone.length !== 10){ setStatus('กรุณากรอกเบอร์โทร 10 หลัก', true); return; }
+
         if (phone) localStorage.setItem('my_phone', phone);
 
         const payload = {
@@ -92,7 +123,7 @@
           setSaving(true);
           setStatus('กำลังบันทึก…');
 
-          // สำคัญ: ใช้ text/plain เพื่อหลบ CORS preflight ของ Apps Script
+          // ใช้ text/plain เพื่อหลบ preflight ของ Apps Script
           const res = await fetch(GAS + '?route=staff.upsert', {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -105,20 +136,19 @@
           let data; try{ data = JSON.parse(text); }catch{ data = { ok:false, error:'bad json', raw:text }; }
 
           if (data.ok){
-            setStatus('บันทึกเรียบร้อย');
-            // ปิดหน้าต่างเมื่ออยู่ใน LINE
+            setStatus('บันทึกเรียบร้อย ✅');
             if (liff.isInClient()) setTimeout(()=>liff.closeWindow(), 500);
           } else {
-            setStatus('บันทึกล้มเหลว: ' + (data.error || 'unknown'));
+            setStatus('บันทึกล้มเหลว: ' + (data.error || 'unknown'), true);
           }
         }catch(err){
-          setStatus('เกิดข้อผิดพลาด: ' + String(err));
+          setStatus('เกิดข้อผิดพลาด: ' + String(err), true);
         }finally{
           setSaving(false);
         }
       });
     }catch(err){
-      setStatus('Error: ' + String(err));
+      setStatus('Error: ' + String(err), true);
     }
   })();
   </script>
