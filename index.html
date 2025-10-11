@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Siamguard – Field App</title>
+  <!-- สำคัญเมื่อโฮสต์ใต้ /servicereport -->
+  <base href="/servicereport/">
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,sans-serif;padding:16px}
+    label{display:block;margin:12px 0 6px}
+    input,select,button{width:100%;padding:10px;font-size:16px}
+    .hint{color:#666;font-size:14px}
+  </style>
+</head>
+<body>
+  <h2>ลงทะเบียนพนักงาน</h2>
+  <div id="status" class="hint">กำลังตรวจสอบ ...</div>
+
+  <form id="form" style="display:none">
+    <label>ชื่อที่แสดง</label><input id="display" readonly />
+    <label>เบอร์โทร</label><input id="phone" placeholder="08xxxxxxxx" inputmode="tel" />
+    <label>ทีม</label><select id="team"><option value="">-- เลือกทีม --</option></select>
+    <button type="submit" style="margin-top:12px">บันทึก</button>
+  </form>
+
+  <script>
+  // TODO: ใส่ค่าจริงของคุณ
+  const LIFF_ID = 'YOUR_LIFF_ID';
+  const GAS = 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec';
+
+  async function loadTeams(){
+    try{
+      const r = await fetch(GAS + '?route=teams.list');
+      const j = await r.json();
+      if(j.ok){
+        const sel = document.getElementById('team');
+        j.data.filter(t=>t.active).forEach(t=>{
+          const o = document.createElement('option');
+          o.value = t.team_name; o.textContent = t.team_name; sel.appendChild(o);
+        });
+      }
+    }catch(_){}
+  }
+
+  (async ()=>{
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) { liff.login(); return; }
+      if (!liff.isInClient()) { document.getElementById('status').textContent='กรุณาเปิดลิงก์นี้ใน LINE'; return; }
+
+      const prof = await liff.getProfile();
+      document.getElementById('display').value = prof.displayName || '';
+      document.getElementById('status').textContent = 'พบบัญชี: ' + (prof.displayName||'');
+      await loadTeams();
+      document.getElementById('form').style.display = 'block';
+
+      const savedPhone = localStorage.getItem('my_phone')||'';
+      if(savedPhone) document.getElementById('phone').value = savedPhone;
+
+      document.getElementById('form').addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const phone = document.getElementById('phone').value.trim();
+        const team  = document.getElementById('team').value.trim();
+        if(phone) localStorage.setItem('my_phone', phone);
+
+        const payload = { lineUid: prof.userId, display: prof.displayName||'', phone, team_name: team||undefined };
+        const r = await fetch(GAS+'?route=staff.upsert', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const j = await r.json();
+        document.getElementById('status').textContent = j.ok ? 'บันทึกเรียบร้อย ✅' : ('บันทึกล้มเหลว: ' + (j.error||''));
+        if(j.ok && liff.isInClient()) liff.closeWindow();
+      });
+    }catch(err){
+      document.getElementById('status').textContent = 'Error: ' + String(err);
+    }
+  })();
+  </script>
+</body>
+</html>
