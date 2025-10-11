@@ -3,3 +3,13 @@ node_modules
 .env.local 
 desktop.ini 
 public/desktop.ini 
+node_modules/
+.next/
+out/
+dist/
+public/
+.vscode/
+.env*
+*.log
+desktop.ini
+public/desktop.ini
