@@ -2,17 +2,25 @@
 import React from "react";
 
 /** ---------------------------
- * Helper: GAS exec base URL
+ * Exec base: รองรับหลายค่า + comma-separated
  * --------------------------- */
-function getExecBase() {
-  const base =
-    process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY ||
-    process.env.NEXT_PUBLIC_GAS_EXEC ||
-    process.env.NEXT_PUBLIC_GAS_EXEC_BACKUP ||
-    process.env.GAS_EXEC ||
-    process.env.NEXT_PUBLIC_API_BASE ||
-    "";
-  return String(base || "").replace(/\/+$/, ""); // ตัด / ท้าย
+function getExecBases() {
+  const cands = [
+    process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY,
+    process.env.NEXT_PUBLIC_GAS_EXEC,
+    process.env.NEXT_PUBLIC_GAS_EXEC_BACKUP,
+    process.env.NEXT_PUBLIC_GAS_URL,
+    process.env.GAS_EXEC,
+    process.env.NEXT_PUBLIC_API_BASE,
+  ]
+    .filter(Boolean)
+    .flatMap((s) => String(s).split(","))
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+    .map((s) => s.replace(/\/+$/, "")); // ตัด / ท้าย
+
+  // กันกรณีว่างหมด
+  return Array.from(new Set(cands));
 }
 
 /** ---------------------------
@@ -23,7 +31,6 @@ function adaptReportPayload(json) {
   const h = json?.header || {};
   const svcId = h.service_id || h.logId || "";
 
-  // map ฟิลด์หลัก (เผื่อชื่อใหม่/เก่า)
   const payload = {
     serviceId: svcId,
     visitId: h.visit_id || h.visitId || "",
@@ -36,7 +43,6 @@ function adaptReportPayload(json) {
     pdfUrl: h.report_url || h.pdfUrl || "",
   };
 
-  // รวม items+photos ตาม zone -> [{area, chemicals, photos}]
   const byZone = new Map();
   const ensure = (z) => {
     const key = z || "ทั่วไป";
@@ -50,7 +56,7 @@ function adaptReportPayload(json) {
     row.chemicals.push({
       name: it.name || "",
       qty: it.qty || "",
-      unit: it.unit || "", // เผื่ออนาคต
+      unit: it.unit || "",
       link: it.link || "",
       remark: it.remark || "",
     });
@@ -61,7 +67,7 @@ function adaptReportPayload(json) {
     const row = ensure(p.zone);
     row.photos.push({
       url: p.url,
-      thumb: p.url, // ถ้ามีตัวย่อจะสลับมาใช้ได้
+      thumb: p.url,
       caption: p.caption || "",
       taken_at: p.taken_at || "",
     });
@@ -71,41 +77,75 @@ function adaptReportPayload(json) {
 }
 
 /** ---------------------------
- * SSR: ดึงข้อมูลรายงานจาก GAS
+ * Helper: ลองยิงหลาย URL/หลายเอ็นด์พอยน์ต์จนกว่าจะสำเร็จ
+ * --------------------------- */
+async function tryFetchReport(serviceId) {
+  const bases = getExecBases();
+  const endpoints = [
+    (b) => `${b}?route=report-by-id&service_id=${encodeURIComponent(serviceId)}`,
+    (b) => `${b}?route=report&id=${encodeURIComponent(serviceId)}`, // ของเก่า
+  ];
+
+  let lastErr = "";
+  for (const b of bases) {
+    for (const make of endpoints) {
+      try {
+        const url = make(b);
+        const res = await fetch(url, { redirect: "follow", cache: "no-store" });
+        const json = await res.json().catch(() => ({}));
+        if (json?.ok) {
+          return { base: b, endpoint: url, json };
+        }
+        lastErr = json?.error || `HTTP ${res.status}`;
+      } catch (e) {
+        lastErr = String(e?.message || e);
+      }
+    }
+  }
+  throw new Error(lastErr || "fetch failed");
+}
+
+/** (optional) เรียก /validate ถ้ามี */
+async function tryValidate(serviceId) {
+  const bases = getExecBases();
+  for (const b of bases) {
+    try {
+      const url = `${b}?route=validate&service_id=${encodeURIComponent(serviceId)}`;
+      const res = await fetch(url, { redirect: "follow", cache: "no-store" });
+      if (!res.ok) continue;
+      const json = await res.json().catch(() => ({}));
+      if (json?.ok) return json;
+    } catch (_) {}
+  }
+  return null; // ไม่ถือเป็น error
+}
+
+/** ---------------------------
+ * SSR
  * --------------------------- */
 export async function getServerSideProps(ctx) {
   const serviceId = String(ctx.params?.serviceId || "");
-  const base = getExecBase();
-
-  let data = null;
-  let error = null;
-
   if (!serviceId) {
     return { props: { serviceId, data: null, error: "missing id" } };
   }
 
   try {
-    const url = `${base}?route=report-by-id&service_id=${encodeURIComponent(
-      serviceId
-    )}`;
-    const res = await fetch(url, { redirect: "follow" });
-    const json = await res.json();
+    const { json } = await tryFetchReport(serviceId);
+    const data = adaptReportPayload(json);
 
-    if (!json?.ok) {
-      throw new Error(json?.error || `HTTP ${res.status}`);
-    }
-    data = adaptReportPayload(json);
+    // เรียก validate แบบไม่บังคับ
+    const validate = await tryValidate(serviceId).catch(() => null);
+
+    return { props: { serviceId, data, validate: validate || null, error: null } };
   } catch (e) {
-    error = String(e?.message || e);
+    return { props: { serviceId, data: null, error: String(e?.message || e) } };
   }
-
-  return { props: { serviceId, data, error } };
 }
 
 /** ---------------------------
  * UI
  * --------------------------- */
-export default function ServiceReportPage({ serviceId, data, error }) {
+export default function ServiceReportPage({ serviceId, data, error, validate }) {
   if (error) {
     return (
       <div style={{ padding: 16, color: "#f66" }}>
@@ -130,9 +170,27 @@ export default function ServiceReportPage({ serviceId, data, error }) {
     pdfUrl,
   } = data;
 
+  // แปลงข้อมูล validate (ถ้ามี) ให้เป็นป้ายสรุปอย่างย่อ
+  const ValidateBanner = () => {
+    if (!validate?.required && !validate?.ok) return null;
+
+    // ถ้า API /validate ส่ง required มาเป็นสเปคกลุ่ม ให้สรุปผลแบบยืดหยุ่น
+    const required = validate.required || {};
+    let note = "ผลตรวจหลักฐาน: พร้อมใช้งาน";
+    if (required.complete === false) note = "ผลตรวจหลักฐาน: ยังไม่ครบ";
+
+    return (
+      <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-amber-300 text-sm">
+        {note}
+      </div>
+    );
+  };
+
   return (
     <main className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">รายงานหน้างาน</h1>
+
+      <ValidateBanner />
 
       <section className="mb-4">
         <div><b>Service ID:</b> {id}</div>
@@ -160,18 +218,22 @@ export default function ServiceReportPage({ serviceId, data, error }) {
 
             <div className="mb-2">
               <div className="opacity-80 text-sm">สารเคมีที่ใช้</div>
-              <ul className="list-disc pl-5">
-                {(it?.chemicals || []).map((c, i) => (
-                  <li key={i}>
-                    {c?.name} {c?.qty ?? ""} {c?.unit ?? ""}
-                  </li>
-                ))}
-              </ul>
+              {(it?.chemicals?.length || 0) === 0 ? (
+                <div className="text-neutral-400">-</div>
+              ) : (
+                <ul className="list-disc pl-5">
+                  {it.chemicals.map((c, i) => (
+                    <li key={i}>
+                      {c?.name} {c?.qty ?? ""} {c?.unit ?? ""}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {!!(it?.photos || []).length && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {(it.photos || []).map((p, i) => (
+                {it.photos.map((p, i) => (
                   <a
                     key={i}
                     href={p.url}
@@ -179,7 +241,7 @@ export default function ServiceReportPage({ serviceId, data, error }) {
                     rel="noreferrer"
                     className="block rounded overflow-hidden border border-neutral-700"
                   >
-                    <img src={p.thumb || p.url} alt={`photo-${i}`} />
+                    <img loading="lazy" src={p.thumb || p.url} alt={`photo-${i}`} />
                   </a>
                 ))}
               </div>
