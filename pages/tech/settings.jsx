@@ -73,11 +73,11 @@ export default function Settings() {
   };
 
   const gotoJobs = () => {
-    const q = new URLSearchParams(
-      typeof window !== "undefined" ? window.location.search : ""
-    );
-    if (uid.trim()) q.set("uid", uid.trim());
-    router.push(`/tech/jobs?${q.toString()}`);
+    const currentQs = typeof window !== 'undefined' ? window.location.search : '';
+    const q = new URLSearchParams(currentQs);
+    if (uid.trim()) q.set('uid', uid.trim());
+    const qsStr = q.toString();
+    router.push(`/tech/jobs${qsStr ? `?${qsStr}` : ''}`);
   };
 
   const copyJobsLink = async () => {

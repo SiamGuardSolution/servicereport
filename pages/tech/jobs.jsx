@@ -12,14 +12,12 @@ const UID_KEYS = ["SG_UID", "sg.staffUid", "staffUid", "uid"];
 const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || "";
 const LIFF_URL = LIFF_ID ? `https://liff.line.me/${LIFF_ID}` : null;
 
-/** วันนี้ตามเวลาไทย */
 function todayTH() {
   const d = new Date();
   const th = new Date(d.getTime() + 7 * 3600 * 1000);
   return th.toISOString().slice(0, 10);
 }
 
-/** โหลดงานฝั่ง client */
 async function loadJobsClient({ date, range, uid, name, phone }) {
   try {
     const data = await fetchMyJobs({
@@ -67,48 +65,40 @@ export default function JobsPage() {
     sources: {},
   });
 
-  // เติม uid ลง URL หากหาได้จาก localStorage
   const replaceWithUid = async (uid) => {
-    const params = new URLSearchParams(router.asPath.split("?")[1] || "");
-    params.set("uid", uid);
-    await router.replace(`${router.pathname}?${params.toString()}`, undefined, {
-      shallow: true,
-    });
+    // ถ้าใน URL มี uid แล้วและเหมือนเดิม ไม่ต้อง replace
+    const params = new URLSearchParams(router.asPath.split('?')[1] || '');
+    if (params.get('uid') === uid) return;
+
+    params.set('uid', uid);
+    await router.replace(`${router.pathname}?${params.toString()}`, undefined, { shallow: true });
     setQ((prev) => ({ ...prev, uid }));
   };
 
-  /** ขั้น 1: ตรวจ UID — ไม่เรียก LIFF อัตโนมัติอีกแล้ว */
+  // useEffect ตรวจ UID – ให้รัน “ครั้งเดียว” และอย่าอิง router.asPath
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        if (typeof window === "undefined") return;
+        if (typeof window === 'undefined') return;
 
-        // ถ้า URL มี uid แล้ว → เก็บใน localStorage เพื่อใช้หน้าอื่นๆ ต่อ
-        const urlUid = router.query?.uid ? String(router.query.uid) : "";
+        const urlUid = router.query?.uid ? String(router.query.uid) : '';
         if (urlUid) {
-          localStorage.setItem("SG_UID", urlUid);
-          setUidInput(urlUid);
+          localStorage.setItem('SG_UID', urlUid);
           return;
         }
 
-        // หาใน localStorage ตามคีย์ยอดนิยม
         const fromLS = UID_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
-        if (fromLS) {
-          setUidInput(fromLS);
-          await replaceWithUid(fromLS);
-        }
+        if (fromLS) await replaceWithUid(fromLS);
       } finally {
         if (!cancelled) setCheckingUid(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
+    // รันครั้งเดียวพอ
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.pathname, router.asPath]);
+  }, []);
 
-  /** ขั้น 2: โหลดรายการงานเมื่อพารามิเตอร์พร้อม */
   useEffect(() => {
     let cancelled = false;
     (async () => {
