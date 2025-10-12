@@ -148,10 +148,28 @@
 
           if (data.ok){
             setStatus('บันทึกเรียบร้อย ✅');
-            if (liff.isInClient()) setTimeout(()=>liff.closeWindow(), 500);
+
+            // เก็บข้อมูลไว้ใช้หน้าอื่น (ไม่บังคับ)
+            localStorage.setItem('sg_staff_phone', phone || '');
+            localStorage.setItem('sg_staff_team',  team  || '');
+            localStorage.setItem('sg_staff_name',  prof.displayName || '');
+            localStorage.setItem('sg_staff_uid',   prof.userId || '');
+
+            const target = 'https://servicereport.siamguards.com/tech/jobs';
+
+            if (liff.isInClient()) {
+              // เปิดหน้าแอปงานในเบราว์เซอร์ (หรือ in-app ได้ทั้งคู่)
+              liff.openWindow({ url: target, external: true });
+              // ปิดหน้าลงทะเบียน
+              setTimeout(() => liff.closeWindow(), 300);
+            } else {
+              // นอกแอป → เดินหน้าเข้าแอปเลย
+              location.assign(target);
+            }
           } else {
             setStatus('บันทึกล้มเหลว: ' + (data.error || 'unknown'), true);
           }
+
         }catch(err){
           setStatus('เกิดข้อผิดพลาด: ' + String(err), true);
         }finally{
