@@ -1,90 +1,198 @@
 // pages/tech/jobs.jsx
-import React, { useEffect } from 'react';
-import { useRouter } from 'next/router';
-import AppShell from '@/components/AppShell';
-import Link from 'next/link';
-import { fetchMyJobs } from '@/lib/api';
+import React, { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import { useRouter } from "next/router";
+import Link from "next/link";
+import { fetchMyJobs } from "@/lib/api";
 
-const UID_KEYS = ['sg.staffUid', 'staffUid', 'uid', 'SG_UID'];
+// ให้ AppShell เรนเดอร์ฝั่ง client เท่านั้น (กัน SSR ลาก liff มา)
+const AppShell = dynamic(() => import("@/components/AppShell"), { ssr: false });
 
+const UID_KEYS = ["SG_UID", "sg.staffUid", "staffUid", "uid"];
+
+/** วันนี้ตามเวลาไทย (กันปัญหา UTC ข้ามวัน) */
 function todayTH() {
-  // วันนี้ตามเวลาไทย (กันปัญหา UTC ข้ามวัน)
   const d = new Date();
   const th = new Date(d.getTime() + 7 * 3600 * 1000);
   return th.toISOString().slice(0, 10);
 }
 
-export async function getServerSideProps(ctx) {
-  // รับค่าจาก query เพื่อทดสอบย้อนหลัง/ล่วงหน้าได้
-  const date  = (ctx.query.date  && String(ctx.query.date))  || todayTH();
-  const range = (ctx.query.range && parseInt(String(ctx.query.range),10)) || 0;
-  const uid   = ctx.query.uid   ? String(ctx.query.uid)   : undefined;
-  const name  = ctx.query.name  ? String(ctx.query.name)  : undefined;
-  const phone = ctx.query.phone ? String(ctx.query.phone) : undefined;
-
+/** โหลดงานฝั่ง client (กัน SSR ชน env/API) */
+async function loadJobsClient({ date, range, uid, name, phone }) {
   try {
-    const data = await fetchMyJobs({ date, range, uid, name, phone, includeUnassigned: true });
-    return { props: { data, q: { date, range, uid: uid||'', name: name||'', phone: phone||'' } } };
+    const data = await fetchMyJobs({
+      date,
+      range,
+      uid,
+      name,
+      phone,
+      includeUnassigned: true,
+    });
+    return data;
   } catch (e) {
-    return { props: { data: { ok:false, error:String(e), general:[], service:[], sources:{} }, q:{ date, range, uid:'', name:'', phone:'' } } };
+    return {
+      ok: false,
+      error: String(e?.message || e),
+      general: [],
+      service: [],
+      sources: {},
+    };
   }
 }
 
-export default function JobsPage({ data, q }) {
-  const general = data?.general ?? [];
-  const service = data?.service ?? [];
+export default function JobsPage() {
   const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [checkingAccount, setCheckingAccount] = useState(true);
+  const [q, setQ] = useState(() => {
+    const query = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    return {
+      date: query?.get("date") || todayTH(),
+      range: Number(query?.get("range") || 0) || 0,
+      uid: query?.get("uid") || "",
+      name: query?.get("name") || "",
+      phone: query?.get("phone") || "",
+    };
+  });
+  const [data, setData] = useState({
+    ok: true,
+    general: [],
+    service: [],
+    sources: {},
+  });
 
-  // ถ้า URL ยังไม่มี uid แต่ localStorage มี → เติม uid แล้ว navigate ใหม่
+  /** ช่วยเติม uid ลงใน URL (จะทำให้ useEffect รอบโหลดงานยิงใหม่เอง) */
+  const replaceWithUid = async (uid) => {
+    const params = new URLSearchParams(router.asPath.split("?")[1] || "");
+    params.set("uid", uid);
+    await router.replace(`${router.pathname}?${params.toString()}`, undefined, { shallow: true });
+    setQ((prev) => ({ ...prev, uid }));
+  };
+
+  /** ขั้น 1: หา uid จาก localStorage ก่อน ถ้าไม่มีก็ค่อยเรียก LIFF */
   useEffect(() => {
-    // ฝั่งเซิร์ฟเวอร์ไม่มี localStorage
-    if (typeof window === 'undefined') return;
+    let cancelled = false;
 
-    const hasUidInUrl =
-      (typeof router.query.uid === 'string' && router.query.uid.length > 0) ||
-      (q?.uid && q.uid.length > 0);
+    (async () => {
+      try {
+        // SSR guard
+        if (typeof window === "undefined") return;
 
-    if (hasUidInUrl) return;
+        // 1) ถ้า URL มี uid แล้ว → เก็บไว้และจบขั้นตรวจ
+        const urlUid = router.query?.uid ? String(router.query.uid) : "";
+        if (urlUid) {
+          localStorage.setItem("SG_UID", urlUid);
+          setCheckingAccount(false);
+          return;
+        }
 
-    // หา UID จาก localStorage ตามคีย์ยอดนิยม
-    const u = UID_KEYS.map(k => localStorage.getItem(k)).find(Boolean);
-    if (!u) return; // ยังไม่ได้ตั้งค่า → ให้หน้าแสดงเตือนต่อไป
+        // 2) หาใน localStorage
+        const fromLS = UID_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
+        if (fromLS) {
+          await replaceWithUid(fromLS);
+          setCheckingAccount(false);
+          return;
+        }
 
-    const params = new URLSearchParams(router.asPath.split('?')[1] || '');
-    params.set('uid', u);
-    // ไม่ใช้ shallow เพื่อให้ GSSP ทำงานใหม่ด้วย uid ที่เติมเข้าไป
-    router.replace(`${router.pathname}?${params.toString()}`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.pathname, router.asPath]); // ใช้ asPath เพื่อจับการเปลี่ยน query
+        // 3) ยังหาไม่ได้ → ใช้ LIFF login (รองรับ external browser)
+        const { default: liff } = await import("@line/liff");
+        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID });
+
+        if (!liff.isLoggedIn()) {
+          liff.login({
+            withLoginOnExternalBrowser: true,
+            redirectUri: window.location.href,
+          });
+          return; // จะกลับมาใหม่หลังล็อกอิน
+        }
+
+        const prof = await liff.getProfile();
+        if (!cancelled && prof?.userId) {
+          localStorage.setItem("SG_UID", prof.userId);
+          await replaceWithUid(prof.userId);
+        }
+      } catch (e) {
+        // ไม่ต้องบล็อกหน้า ให้ผู้ใช้เติม uid เองได้
+        console.warn("check account failed:", e);
+      } finally {
+        if (!cancelled) setCheckingAccount(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.pathname, router.asPath]);
+
+  /** ขั้น 2: โหลดรายการงานเมื่อมีพารามิเตอร์พร้อม */
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      const res = await loadJobsClient(q);
+      if (!cancelled) {
+        setData(res);
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [q.date, q.range, q.uid, q.name, q.phone]);
+
+  const hasUid = useMemo(() => !!(q?.uid && q.uid.length > 0), [q?.uid]);
 
   return (
     <AppShell title="งานของฉัน">
+      {/* สถานะด้านบน */}
+      {!hasUid && (
+        <div className="text-amber-400 text-sm mb-3">
+          ยังไม่พบ UID ใน URL/บัญชี — ระบบจะแนบให้อัตโนมัติหลังเข้าสู่ระบบ LINE (หรือไปที่เมนูตั้งค่าเพื่อผูกบัญชี)
+        </div>
+      )}
+      {checkingAccount && (
+        <div className="text-xs text-neutral-400 mb-2">กำลังตรวจสอบบัญชี LINE …</div>
+      )}
+      {loading && (
+        <div className="text-xs text-neutral-500 mb-4">กำลังโหลดรายการงาน …</div>
+      )}
       {!data?.ok && (
         <div className="text-red-400 text-sm mb-3">
-          โหลดไม่ได้: {data?.error || '-'} {(!q?.uid || q.uid === '') && '(กรุณาตั้งค่า UID ที่เมนูตั้งค่า)'}
+          โหลดไม่ได้: {data?.error || "-"}{" "}
+          {!hasUid && "(กรุณาตั้งค่า UID ที่เมนูตั้งค่า)"}
         </div>
       )}
 
       {/* แถบ debug สั้น ๆ */}
       <div className="text-xs text-neutral-400 mb-3">
-        วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •
-        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •
-        แหล่งข้อมูล:
-        <span className="ml-1">ทั่วไป={data?.sources?.general?.name || '-'}</span>,{' '}
-        <span>Service={data?.sources?.service?.name || '-'}</span>
+        วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •{" "}
+        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •{" "}
+        แหล่งข้อมูล:{" "}
+        <span className="ml-1">ทั่วไป={data?.sources?.general?.name || "-"}</span>,{" "}
+        <span>Service={data?.sources?.service?.name || "-"}</span>{" "}
+        <button
+          className="ml-2 underline"
+          onClick={() => setQ((prev) => ({ ...prev }))}
+          title="รีเฟรช"
+        >
+          รีเฟรช
+        </button>
       </div>
 
       <h2 className="text-lg font-semibold mb-2">งานทั่วไป</h2>
-      {general.length === 0 ? (
+      {(!data?.general || data.general.length === 0) ? (
         <div className="text-neutral-400 mb-6">- ไม่มีรายการ -</div>
       ) : (
         <div className="space-y-2 mb-6">
-          {general.map((j, i) => (
+          {data.general.map((j, i) => (
             <div key={i} className="rounded-xl bg-neutral-800 p-3 flex items-center justify-between">
               <div>
-                <div className="font-medium">{j.customer || '-'}</div>
-                <div className="text-sm text-neutral-400">{j.date} • {j.time || ''}</div>
-                <div className="text-sm text-neutral-400">{j.address || '-'}</div>
+                <div className="font-medium">{j.customer || "-"}</div>
+                <div className="text-sm text-neutral-400">{j.date} • {j.time || ""}</div>
+                <div className="text-sm text-neutral-400">{j.address || "-"}</div>
               </div>
               <div className="flex gap-2">
                 {j.serviceId ? (
@@ -99,16 +207,16 @@ export default function JobsPage({ data, q }) {
       )}
 
       <h2 className="text-lg font-semibold mb-2">งาน Service</h2>
-      {service.length === 0 ? (
+      {(!data?.service || data.service.length === 0) ? (
         <div className="text-neutral-400">- ไม่มีรายการ -</div>
       ) : (
         <div className="space-y-2">
-          {service.map((j, i) => (
+          {data.service.map((j, i) => (
             <div key={i} className="rounded-xl bg-neutral-800 p-3 flex items-center justify-between">
               <div>
-                <div className="font-medium">{j.customer || '-'}</div>
-                <div className="text-sm text-neutral-400">{j.date} • {j.time || ''}</div>
-                <div className="text-sm text-neutral-400">{j.address || '-'}</div>
+                <div className="font-medium">{j.customer || "-"}</div>
+                <div className="text-sm text-neutral-400">{j.date} • {j.time || ""}</div>
+                <div className="text-sm text-neutral-400">{j.address || "-"}</div>
               </div>
               <div className="flex gap-2">
                 {j.serviceId ? (
