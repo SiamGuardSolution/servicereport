@@ -1,5 +1,5 @@
 // components/ChemicalEditor.jsx
-import { useMemo, useState, useId, useRef } from "react";
+import { useMemo, useState, useId, useRef, useEffect } from "react";
 
 const FORCE_UNIT = "L"; // ใช้ลิตรเสมอ
 
@@ -8,15 +8,22 @@ export default function ChemicalEditor({
   onChange,
   options = [],            // [{ name, link?, defaultQty?, unit? }]
   allowCustom = true,
+  requireQty = false,      // true = ต้องมีปริมาณก่อนเพิ่ม
+  maxDecimals = 3,         // จำนวนทศนิยมสูงสุดตอนฟอร์แมต
 }) {
   const [row, setRow] = useState({
     name: "", qty: "", remark: "", link: "", unit: FORCE_UNIT
   });
-  // เราไม่ต้อง track touched.unit แล้ว เพราะบังคับ L เสมอ
   const [touched, setTouched] = useState({ qty: false, link: false });
 
   const listId = useId();
   const nameInputRef = useRef(null);
+  const qtyInputRef = useRef(null);
+
+  useEffect(() => {
+    // โฟกัสช่องชื่อรอบแรก
+    nameInputRef.current?.focus();
+  }, []);
 
   const byName = useMemo(() => {
     const m = new Map();
@@ -29,41 +36,56 @@ export default function ChemicalEditor({
     return byName.get(key);
   };
 
-  // --- helpers ---
+  // ---------- helpers ----------
   const normalizeNumberInput = (v) => String(v || "").trim().replace(",", ".");
+  const clampDecimals = (n) => {
+    if (!isFinite(n)) return "";
+    // จำกัดทศนิยม แล้วตัดศูนย์ท้าย
+    const s = Number(n).toFixed(maxDecimals);
+    return s.replace(/\.?0+$/, "");
+  };
+  const sanitizeUrl = (u) => {
+    const s = String(u || "").trim();
+    if (!s) return "";
+    if (/^https?:\/\//i.test(s)) return s;
+    return `https://${s}`;
+  };
 
   // แปลงเป็นลิตร: รองรับ ml/L; อื่น ๆ จะคืนค่าตามเดิม (แต่ยัง set unit = L)
   const toLiters = (qtyStr, unit) => {
     const n = parseFloat(String(qtyStr || "0").replace(",", "."));
     if (!isFinite(n)) return "";
     const u = String(unit || "").toLowerCase();
-    if (u === "ml") return (n / 1000).toString();
+    if (u === "ml" || u === "มล") return clampDecimals(n / 1000);
     // l หรืออื่น ๆ ให้คงจำนวนเดิมไว้
-    return n.toString();
+    return clampDecimals(n);
   };
 
   // parse "10 ml" หรือ "0.5L" -> แปลงเป็นลิตร + บังคับ unit L
   const parseQtyToLiters = (s) => {
-    const m = String(s || "").trim().match(/^(\d+(?:[.,]\d+)?)\s*([A-Za-zก-๙%/²³]+)?$/);
-    if (!m) return { qty: normalizeNumberInput(s) };
+    const txt = String(s || "").trim();
+    if (!txt) return { qty: "" };
+    const m = txt.match(/^(\d+(?:[.,]\d+)?)\s*([A-Za-zก-๙%/²³]*)$/);
+    if (!m) return { qty: normalizeNumberInput(txt) };
     const rawQty = m[1].replace(",", ".");
     const unit = (m[2] || "").toLowerCase();
     if (unit === "ml" || unit === "มล") return { qty: toLiters(rawQty, "ml") };
     if (unit === "l" || unit === "ลิตร") return { qty: toLiters(rawQty, "l") };
     // หน่วยอื่น ๆ: ไม่แปลงตัวเลข แต่ยังคงใช้ L เป็น unit ที่บันทึก
-    return { qty: normalizeNumberInput(rawQty) };
+    return { qty: clampDecimals(parseFloat(rawQty)) };
   };
 
-  // เมื่อเลือกชื่อ -> เติม defaultQty/link แล้วแปลง defaultQty เป็นลิตร
+  // ---------- events ----------
   const onNameChange = (name) => {
-    const opt = getOption(name);
+    const nm = name || "";
+    const opt = getOption(nm);
     const suggestedQty =
       touched.qty
         ? row.qty
         : (row.qty || (opt?.defaultQty != null ? toLiters(opt.defaultQty, opt.unit) : ""));
     setRow(prev => ({
       ...prev,
-      name,
+      name: nm,
       qty: suggestedQty,
       link: touched.link ? prev.link : (prev.link || (opt?.link ?? "")),
       unit: FORCE_UNIT,
@@ -81,31 +103,60 @@ export default function ChemicalEditor({
     setRow(r => ({ ...r, link: v }));
   };
 
+  // รวมรายการชื่อซ้ำ (sum ปริมาณ)
+  const upsertAndMerge = (arr, item) => {
+    const key = String(item.name || "").trim().toLowerCase();
+    const idx = (arr || []).findIndex(x => String(x.name || "").trim().toLowerCase() === key);
+    if (idx < 0) return [...arr, item];
+    const a = [...arr];
+    const baseQty = parseFloat(a[idx].qty || 0) || 0;
+    const addQty = parseFloat(item.qty || 0) || 0;
+    a[idx] = { ...a[idx], qty: clampDecimals(baseQty + addQty) };
+    // อัปเดต remark/link ล่าสุดถ้ามี
+    if (item.remark) a[idx].remark = item.remark;
+    if (item.link) a[idx].link = item.link;
+    return a;
+  };
+
   const add = () => {
     const nm = (row.name || "").trim();
     if (!nm) return;
+
     if (!allowCustom && !getOption(nm)) return;
 
     const opt = getOption(nm) || {};
-    const finalizedQty = row.qty || (opt.defaultQty != null ? toLiters(opt.defaultQty, opt.unit) : "");
+    const finalizedQtyRaw = row.qty || (opt.defaultQty != null ? toLiters(opt.defaultQty, opt.unit) : "");
+    const finalizedQty = finalizedQtyRaw ? clampDecimals(parseFloat(finalizedQtyRaw)) : "";
+
+    if (requireQty && !finalizedQty) {
+      // โฟกัสไปช่องปริมาณ
+      qtyInputRef.current?.focus();
+      return;
+    }
+
     const finalized = {
       ...row,
       name: nm,
       qty: finalizedQty,
-      link: row.link || opt.link || "",
+      link: sanitizeUrl(row.link || opt.link || ""),
       unit: FORCE_UNIT,
     };
 
-    onChange?.([...(value || []), finalized]);
+    const next = upsertAndMerge(value || [], finalized);
+    onChange?.(next);
 
     setRow({ name: "", qty: "", remark: "", link: "", unit: FORCE_UNIT });
     setTouched({ qty: false, link: false });
+    // โฟกัสกลับชื่อเพื่อสะดวกเพิ่มรายการถัดไป
     nameInputRef.current?.focus();
   };
 
   const removeAt = (i) => onChange?.((value || []).filter((_, x) => x !== i));
 
   const handleKeyDownOnName = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); add(); }
+  };
+  const handleKeyDownOnQty = (e) => {
     if (e.key === "Enter") { e.preventDefault(); add(); }
   };
 
@@ -134,6 +185,7 @@ export default function ChemicalEditor({
         {/* ปริมาณ + หน่วยเป็น suffix (L) */}
         <div className="relative">
           <input
+            ref={qtyInputRef}
             className={`input pr-14`}
             placeholder={
               (() => {
@@ -147,7 +199,9 @@ export default function ChemicalEditor({
             }
             value={row.qty}
             onChange={(e) => onQtyChange(e.target.value)}
+            onKeyDown={handleKeyDownOnQty}
             inputMode="decimal"
+            pattern="[0-9.,]*"
           />
           <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs px-2 py-0.5 rounded bg-neutral-700">
             {currentUnit}
@@ -178,7 +232,12 @@ export default function ChemicalEditor({
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); add(); }
           }}
         />
-        <button type="button" onClick={add} className="px-4 py-2 rounded-xl bg-emerald-600">
+        <button
+          type="button"
+          onClick={add}
+          className="px-4 py-2 rounded-xl bg-emerald-600 disabled:opacity-60"
+          disabled={!row.name.trim() || (requireQty && !row.qty)}
+        >
           เพิ่ม
         </button>
       </div>
@@ -196,12 +255,17 @@ export default function ChemicalEditor({
                 </div>
                 {it.remark && <div className="text-neutral-400">{it.remark}</div>}
                 {it.link && (
-                  <a className="underline text-emerald-400" href={it.link} target="_blank" rel="noreferrer">
+                  <a className="underline text-emerald-400" href={sanitizeUrl(it.link)} target="_blank" rel="noreferrer">
                     เปิดลิงก์
                   </a>
                 )}
               </div>
-              <button type="button" onClick={() => removeAt(i)} className="px-3 py-1 rounded-lg bg-red-600">
+              <button
+                type="button"
+                onClick={() => removeAt(i)}
+                className="px-3 py-1 rounded-lg bg-red-600"
+                aria-label={`ลบ ${it.name}`}
+              >
                 ลบ
               </button>
             </div>

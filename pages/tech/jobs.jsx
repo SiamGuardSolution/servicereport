@@ -5,11 +5,12 @@ import { useRouter } from "next/router";
 import Link from "next/link";
 import { fetchMyJobs } from "@/lib/api";
 
-// เรนเดอร์ AppShell ฝั่ง client เท่านั้น
+// เรนเดอร์ AppShell ฝั่ง client เท่านั้น (กัน SSR เจอ window/localStorage)
 const AppShell = dynamic(() => import("@/components/AppShell"), { ssr: false });
 
 const UID_KEYS = ["SG_UID", "sg.staffUid", "staffUid", "uid"];
-const LIFF_URL = `https://liff.line.me/${process.env.NEXT_PUBLIC_LIFF_ID}`;
+const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || "";
+const LIFF_URL = LIFF_ID ? `https://liff.line.me/${LIFF_ID}` : null;
 
 /** วันนี้ตามเวลาไทย */
 function todayTH() {
@@ -45,6 +46,7 @@ export default function JobsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [checkingUid, setCheckingUid] = useState(true);
+  const [uidInput, setUidInput] = useState("");
 
   const [q, setQ] = useState(() => {
     const query =
@@ -75,23 +77,25 @@ export default function JobsPage() {
     setQ((prev) => ({ ...prev, uid }));
   };
 
-  /** ขั้น 1: ตรวจ UID — ไม่เรียก liff.login() อีกแล้ว */
+  /** ขั้น 1: ตรวจ UID — ไม่เรียก LIFF อัตโนมัติอีกแล้ว */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         if (typeof window === "undefined") return;
 
-        // 1) URL มี uid อยู่แล้ว
+        // ถ้า URL มี uid แล้ว → เก็บใน localStorage เพื่อใช้หน้าอื่นๆ ต่อ
         const urlUid = router.query?.uid ? String(router.query.uid) : "";
         if (urlUid) {
           localStorage.setItem("SG_UID", urlUid);
+          setUidInput(urlUid);
           return;
         }
 
-        // 2) หาใน localStorage
+        // หาใน localStorage ตามคีย์ยอดนิยม
         const fromLS = UID_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
         if (fromLS) {
+          setUidInput(fromLS);
           await replaceWithUid(fromLS);
         }
       } finally {
@@ -122,32 +126,86 @@ export default function JobsPage() {
 
   const hasUid = useMemo(() => !!(q?.uid && q.uid.length > 0), [q?.uid]);
 
+  const saveUidManually = async () => {
+    const u = (uidInput || "").trim();
+    if (!u) return;
+    try {
+      localStorage.setItem("SG_UID", u);
+      await replaceWithUid(u);
+    } catch (_) {}
+  };
+
+  const clearUid = async () => {
+    ["SG_UID", "sg.staffUid", "staffUid", "uid"].forEach((k) => localStorage.removeItem(k));
+    setUidInput("");
+    const params = new URLSearchParams(router.asPath.split("?")[1] || "");
+    params.delete("uid");
+    await router.replace(`${router.pathname}?${params.toString()}`, undefined, { shallow: true });
+    setQ((prev) => ({ ...prev, uid: "" }));
+  };
+
+  // ช่วยแปล error ที่พบบ่อย
+  const explainError = (msg) => {
+    if (!msg) return "";
+    if (/no-team-scope|กรุณาผูก UID/i.test(msg)) {
+      return "บัญชียังไม่ผูกทีมในชีต StaffLink หรือยังไม่ได้ตั้งค่า UID ให้ช่าง";
+    }
+    if (/timeout/i.test(msg)) return "การเชื่อมต่อขัดข้อง/ช้า กรุณาลองรีเฟรชอีกครั้ง";
+    return "";
+  };
+
   return (
     <AppShell title="งานของฉัน">
-      {/* แจ้งสถานะ */}
+      {/* แจ้งสถานะ + เครื่องมือช่วยเมื่อไม่มี UID */}
       {!hasUid && (
         <div className="mb-4 p-3 rounded-xl bg-yellow-900/20 border border-yellow-800 text-yellow-200 text-sm">
-          ยังไม่พบ UID ในระบบ — กรุณาเข้าสู่ระบบด้วย LINE ก่อน
-          <div className="mt-2">
-            <a href={LIFF_URL} className="underline text-emerald-400">
-              เข้าสู่ระบบด้วย LINE
-            </a>
+          ยังไม่พบ UID ในระบบ — กรุณาเข้าสู่ระบบด้วย LINE หรือตั้งค่า UID ด้วยตัวเอง
+          <div className="mt-2 flex flex-col gap-2">
+            {LIFF_URL ? (
+              <a href={LIFF_URL} className="underline text-emerald-400">
+                เข้าสู่ระบบด้วย LINE
+              </a>
+            ) : (
+              <div className="text-xs opacity-80">
+                (ยังไม่ได้ตั้งค่า <code>NEXT_PUBLIC_LIFF_ID</code> จึงซ่อนปุ่ม LINE)
+              </div>
+            )}
+            <div className="flex gap-2 items-center">
+              <input
+                className="w-full rounded-lg bg-neutral-900 px-3 py-2 outline-none"
+                placeholder="กรอก UID ด้วยตนเอง เช่น Uxxxxxxxxxxxxxxxxxxxx"
+                value={uidInput}
+                onChange={(e) => setUidInput(e.target.value)}
+              />
+              <button onClick={saveUidManually} className="px-3 py-2 rounded-lg bg-emerald-600">
+                ใช้ UID นี้
+              </button>
+              <button onClick={clearUid} className="px-3 py-2 rounded-lg bg-neutral-700">
+                ล้าง
+              </button>
+            </div>
           </div>
         </div>
       )}
+
       {checkingUid && <div className="text-xs text-neutral-400 mb-2">กำลังตรวจสอบ UID …</div>}
       {loading && <div className="text-xs text-neutral-500 mb-4">กำลังโหลดรายการงาน …</div>}
+
       {!data?.ok && (
         <div className="text-red-400 text-sm mb-3">
-          โหลดไม่ได้: {data?.error || "-"} {!hasUid && "(กรุณาเข้าสู่ระบบ/ผูก UID)"}
+          โหลดไม่ได้: {data?.error || "-"}{" "}
+          {!hasUid && "(กรุณาเข้าสู่ระบบ/ผูก UID)"}
+          {explainError(data?.error) && (
+            <div className="text-xs text-red-300 mt-1">{explainError(data?.error)}</div>
+          )}
         </div>
       )}
 
       {/* แถบ debug */}
       <div className="text-xs text-neutral-400 mb-3">
-        วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •
-        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •
-        แหล่งข้อมูล:
+        วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •{" "}
+        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •{" "}
+        แหล่งข้อมูล:{" "}
         <span className="ml-1">ทั่วไป={data?.sources?.general?.name || "-"}</span>,{" "}
         <span>Service={data?.sources?.service?.name || "-"}</span>{" "}
         <button

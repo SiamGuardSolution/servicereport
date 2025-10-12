@@ -1,8 +1,8 @@
 // pages/report/[serviceId].jsx
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 /** ---------------------------
- * Exec base: รองรับหลายค่า + comma-separated
+ * Exec bases: รองรับหลายค่า + comma-separated
  * --------------------------- */
 function getExecBases() {
   const cands = [
@@ -17,17 +17,15 @@ function getExecBases() {
     .flatMap((s) => String(s).split(","))
     .map((s) => String(s).trim())
     .filter(Boolean)
-    .map((s) => s.replace(/\/+$/, "")); // ตัด / ท้าย
+    .map((s) => s.replace(/\/+$/, ""));
 
-  // กันกรณีว่างหมด
-  return Array.from(new Set(cands));
+  return Array.from(new Set(cands)); // unique
 }
 
 /** ---------------------------
- * Adapter: รวมสคีมาเก่า/ใหม่ให้เป็นรูปเดียวกับ UI
+ * Adapter: รวมสคีมาเก่า/ใหม่ให้เป็นออบเจ็กต์เดียวกับ UI
  * --------------------------- */
 function adaptReportPayload(json) {
-  // json รูปแบบ { ok, header, items, photos }
   const h = json?.header || {};
   const svcId = h.service_id || h.logId || "";
 
@@ -50,7 +48,6 @@ function adaptReportPayload(json) {
     return byZone.get(key);
   };
 
-  // Chemicals: [{ zone, name, qty, link, remark }]
   (json?.items || []).forEach((it) => {
     const row = ensure(it.zone);
     row.chemicals.push({
@@ -62,7 +59,6 @@ function adaptReportPayload(json) {
     });
   });
 
-  // Photos: [{ zone, url, caption, taken_at }]
   (json?.photos || []).forEach((p) => {
     const row = ensure(p.zone);
     row.photos.push({
@@ -77,27 +73,37 @@ function adaptReportPayload(json) {
 }
 
 /** ---------------------------
- * Helper: ลองยิงหลาย URL/หลายเอ็นด์พอยน์ต์จนกว่าจะสำเร็จ
+ * Fetch helpers (timeout + no-store)
  * --------------------------- */
+function withTimeout(ms = 10000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort("timeout"), ms);
+  return { signal: ctl.signal, clear: () => clearTimeout(t) };
+}
+
+/** ลองดึงรายงานจากหลาย base + หลาย route จนสำเร็จ */
 async function tryFetchReport(serviceId) {
   const bases = getExecBases();
-  const endpoints = [
+  const routes = [
     (b) => `${b}?route=report-by-id&service_id=${encodeURIComponent(serviceId)}`,
-    (b) => `${b}?route=report&id=${encodeURIComponent(serviceId)}`, // ของเก่า
+    (b) => `${b}?route=report&id=${encodeURIComponent(serviceId)}`, // compat เก่า
   ];
 
   let lastErr = "";
   for (const b of bases) {
-    for (const make of endpoints) {
+    for (const make of routes) {
+      const { signal, clear } = withTimeout(12000);
       try {
         const url = make(b);
-        const res = await fetch(url, { redirect: "follow", cache: "no-store" });
+        const res = await fetch(url, { redirect: "follow", cache: "no-store", signal });
         const json = await res.json().catch(() => ({}));
+        clear();
         if (json?.ok) {
-          return { base: b, endpoint: url, json };
+          return { base: b, url, json };
         }
         lastErr = json?.error || `HTTP ${res.status}`;
       } catch (e) {
+        clear();
         lastErr = String(e?.message || e);
       }
     }
@@ -105,19 +111,20 @@ async function tryFetchReport(serviceId) {
   throw new Error(lastErr || "fetch failed");
 }
 
-/** (optional) เรียก /validate ถ้ามี */
+/** (ออปชัน) เรียก /validate ถ้ามี */
 async function tryValidate(serviceId) {
   const bases = getExecBases();
   for (const b of bases) {
+    const { signal, clear } = withTimeout(8000);
     try {
       const url = `${b}?route=validate&service_id=${encodeURIComponent(serviceId)}`;
-      const res = await fetch(url, { redirect: "follow", cache: "no-store" });
-      if (!res.ok) continue;
+      const res = await fetch(url, { redirect: "follow", cache: "no-store", signal });
       const json = await res.json().catch(() => ({}));
-      if (json?.ok) return json;
+      clear();
+      if (res.ok && json?.ok) return json;
     } catch (_) {}
   }
-  return null; // ไม่ถือเป็น error
+  return null;
 }
 
 /** ---------------------------
@@ -125,35 +132,78 @@ async function tryValidate(serviceId) {
  * --------------------------- */
 export async function getServerSideProps(ctx) {
   const serviceId = String(ctx.params?.serviceId || "");
+  const debug = String(ctx.query?.debug || "") === "1";
+
   if (!serviceId) {
-    return { props: { serviceId, data: null, error: "missing id" } };
+    return { props: { serviceId, data: null, error: "missing id", debug, meta: null } };
   }
+
+  // ปิด cache CDN/บราวเซอร์ (รายงานควรสด)
+  try {
+    ctx.res.setHeader("Cache-Control", "no-store, max-age=0");
+  } catch {}
 
   try {
-    const { json } = await tryFetchReport(serviceId);
+    const { json, url, base } = await tryFetchReport(serviceId);
     const data = adaptReportPayload(json);
-
-    // เรียก validate แบบไม่บังคับ
     const validate = await tryValidate(serviceId).catch(() => null);
 
-    return { props: { serviceId, data, validate: validate || null, error: null } };
+    const meta = debug ? { fetchedFrom: base, endpoint: url, rawOk: json?.ok } : null;
+    return { props: { serviceId, data, validate: validate || null, error: null, debug, meta } };
   } catch (e) {
-    return { props: { serviceId, data: null, error: String(e?.message || e) } };
+    return { props: { serviceId, data: null, error: String(e?.message || e), debug, meta: null } };
   }
+}
+
+/** ---------------------------
+ * Fallback client fetch (เผื่อ SSR ไม่มี ENV)
+ * --------------------------- */
+function ClientFallback({ serviceId, onLoaded }) {
+  const [state, setState] = useState({ loading: true, error: "", data: null, validate: null });
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const { json } = await tryFetchReport(serviceId);
+        const data = adaptReportPayload(json);
+        const validate = await tryValidate(serviceId).catch(() => null);
+        if (!mounted) return;
+        setState({ loading: false, error: "", data, validate });
+        onLoaded?.({ data, validate });
+      } catch (e) {
+        if (!mounted) return;
+        setState({ loading: false, error: String(e?.message || e), data: null, validate: null });
+      }
+    })();
+    return () => { mounted = false; };
+  }, [serviceId, onLoaded]);
+
+  if (state.loading) return <div style={{ padding: 16 }}>กำลังโหลด…</div>;
+  if (state.error) return <div style={{ padding: 16, color: "#f66" }}>ผิดพลาด: {state.error}</div>;
+  return null;
 }
 
 /** ---------------------------
  * UI
  * --------------------------- */
-export default function ServiceReportPage({ serviceId, data, error, validate }) {
-  if (error) {
+export default function ServiceReportPage({ serviceId, data, error, validate, debug, meta }) {
+  // Fallback client ถ้า SSR ล้มเหลว
+  const [clientData, setClientData] = useState(null);
+  const effective = clientData?.data || data;
+  const effectiveValidate = clientData?.validate || validate;
+
+  if (error && !effective) {
+    // แสดง fallback loader ที่จะพยายามโหลดเองฝั่ง client
     return (
-      <div style={{ padding: 16, color: "#f66" }}>
-        ผิดพลาด: {error}
-      </div>
+      <>
+        <ClientFallback serviceId={serviceId} onLoaded={(x) => setClientData(x)} />
+        {/* ถ้า client ก็ล้มเหลว จะแสดง error เดิมด้านล่าง */}
+        <div style={{ padding: 16, color: "#f66" }}>ผิดพลาด: {error}</div>
+      </>
     );
   }
-  if (!data) {
+
+  if (!effective) {
     return <div style={{ padding: 16 }}>ไม่พบข้อมูลรายงาน</div>;
   }
 
@@ -168,17 +218,15 @@ export default function ServiceReportPage({ serviceId, data, error, validate }) 
     items = [],
     signatureUrl,
     pdfUrl,
-  } = data;
+  } = effective;
 
-  // แปลงข้อมูล validate (ถ้ามี) ให้เป็นป้ายสรุปอย่างย่อ
   const ValidateBanner = () => {
-    if (!validate?.required && !validate?.ok) return null;
+    const v = effectiveValidate;
+    if (!v?.required && !v?.ok) return null;
 
-    // ถ้า API /validate ส่ง required มาเป็นสเปคกลุ่ม ให้สรุปผลแบบยืดหยุ่น
-    const required = validate.required || {};
+    // รองรับโครงสร้างยืดหยุ่น เช่น {required: { groups:[...], complete:true/false }}
     let note = "ผลตรวจหลักฐาน: พร้อมใช้งาน";
-    if (required.complete === false) note = "ผลตรวจหลักฐาน: ยังไม่ครบ";
-
+    if (v?.required?.complete === false || v?.ok === false) note = "ผลตรวจหลักฐาน: ยังไม่ครบ";
     return (
       <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-amber-300 text-sm">
         {note}
@@ -189,6 +237,15 @@ export default function ServiceReportPage({ serviceId, data, error, validate }) 
   return (
     <main className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">รายงานหน้างาน</h1>
+
+      {debug && meta && (
+        <div className="mb-4 rounded-md border border-cyan-700/40 bg-cyan-900/20 p-3 text-cyan-300 text-xs">
+          <div>debug=1</div>
+          <div>base: {meta.fetchedFrom}</div>
+          <div>endpoint: {meta.endpoint}</div>
+          <div>raw ok: {String(meta.rawOk)}</div>
+        </div>
+      )}
 
       <ValidateBanner />
 
@@ -241,7 +298,12 @@ export default function ServiceReportPage({ serviceId, data, error, validate }) 
                     rel="noreferrer"
                     className="block rounded overflow-hidden border border-neutral-700"
                   >
-                    <img loading="lazy" src={p.thumb || p.url} alt={`photo-${i}`} />
+                    <img
+                      loading="lazy"
+                      src={p.thumb || p.url}
+                      alt={`photo-${i}`}
+                      onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
+                    />
                   </a>
                 ))}
               </div>
@@ -262,6 +324,8 @@ export default function ServiceReportPage({ serviceId, data, error, validate }) 
             src={signatureUrl}
             alt="signature"
             className="bg-white p-2 rounded-md border"
+            loading="lazy"
+            onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
           />
         ) : (
           <div>- ไม่มีข้อมูล -</div>
