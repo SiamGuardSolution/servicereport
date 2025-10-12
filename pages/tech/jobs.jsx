@@ -12,12 +12,14 @@ const UID_KEYS = ["SG_UID", "sg.staffUid", "staffUid", "uid"];
 const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || "";
 const LIFF_URL = LIFF_ID ? `https://liff.line.me/${LIFF_ID}` : null;
 
+/** วันนี้ตามเวลาไทย (กันปัญหา UTC ข้ามวัน) */
 function todayTH() {
   const d = new Date();
   const th = new Date(d.getTime() + 7 * 3600 * 1000);
   return th.toISOString().slice(0, 10);
 }
 
+/** โหลดงานผ่าน API (ฝั่ง client) */
 async function loadJobsClient({ date, range, uid, name, phone }) {
   try {
     const data = await fetchMyJobs({
@@ -46,6 +48,7 @@ export default function JobsPage() {
   const [checkingUid, setCheckingUid] = useState(true);
   const [uidInput, setUidInput] = useState("");
 
+  // ค่าค้นหาเริ่มต้นจาก URL (ถ้าไม่มี date ให้ใช้วันนี้)
   const [q, setQ] = useState(() => {
     const query =
       typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
@@ -65,40 +68,43 @@ export default function JobsPage() {
     sources: {},
   });
 
+  /** อัปเดต URL ให้มี uid (กัน loop: ถ้าเหมือนเดิมไม่ replace) */
   const replaceWithUid = async (uid) => {
-    // ถ้าใน URL มี uid แล้วและเหมือนเดิม ไม่ต้อง replace
-    const params = new URLSearchParams(router.asPath.split('?')[1] || '');
-    if (params.get('uid') === uid) return;
-
-    params.set('uid', uid);
+    const params = new URLSearchParams(router.asPath.split("?")[1] || "");
+    if (params.get("uid") === uid) return; // กันการ replace ซ้ำ
+    params.set("uid", uid);
     await router.replace(`${router.pathname}?${params.toString()}`, undefined, { shallow: true });
     setQ((prev) => ({ ...prev, uid }));
   };
 
-  // useEffect ตรวจ UID – ให้รัน “ครั้งเดียว” และอย่าอิง router.asPath
+  /** ขั้นที่ 1: ตรวจ UID – รันครั้งเดียว, ไม่แตะ asPath เพื่อกัน loop */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        if (typeof window === 'undefined') return;
+        if (typeof window === "undefined") return;
 
-        const urlUid = router.query?.uid ? String(router.query.uid) : '';
+        // 1) ถ้า URL มี uid อยู่แล้ว → เก็บไว้ใน localStorage และจบ
+        const urlUid = router.query?.uid ? String(router.query.uid) : "";
         if (urlUid) {
-          localStorage.setItem('SG_UID', urlUid);
+          localStorage.setItem("SG_UID", urlUid);
           return;
         }
 
+        // 2) หาใน localStorage → ถ้าเจอให้ยัดลง URL ครั้งเดียว
         const fromLS = UID_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
         if (fromLS) await replaceWithUid(fromLS);
       } finally {
         if (!cancelled) setCheckingUid(false);
       }
     })();
-    return () => { cancelled = true; };
-    // รันครั้งเดียวพอ
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** ขั้นที่ 2: โหลดงานเมื่อพารามิเตอร์พร้อม */
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -116,6 +122,7 @@ export default function JobsPage() {
 
   const hasUid = useMemo(() => !!(q?.uid && q.uid.length > 0), [q?.uid]);
 
+  /** กรอก UID เอง */
   const saveUidManually = async () => {
     const u = (uidInput || "").trim();
     if (!u) return;
@@ -125,8 +132,9 @@ export default function JobsPage() {
     } catch (_) {}
   };
 
+  /** ล้าง UID ทั้ง URL + localStorage */
   const clearUid = async () => {
-    ["SG_UID", "sg.staffUid", "staffUid", "uid"].forEach((k) => localStorage.removeItem(k));
+    UID_KEYS.forEach((k) => localStorage.removeItem(k));
     setUidInput("");
     const params = new URLSearchParams(router.asPath.split("?")[1] || "");
     params.delete("uid");
@@ -134,22 +142,22 @@ export default function JobsPage() {
     setQ((prev) => ({ ...prev, uid: "" }));
   };
 
-  // ช่วยแปล error ที่พบบ่อย
+  // ข้อความช่วยอธิบาย error ที่พบบ่อย
   const explainError = (msg) => {
     if (!msg) return "";
     if (/no-team-scope|กรุณาผูก UID/i.test(msg)) {
       return "บัญชียังไม่ผูกทีมในชีต StaffLink หรือยังไม่ได้ตั้งค่า UID ให้ช่าง";
     }
-    if (/timeout/i.test(msg)) return "การเชื่อมต่อขัดข้อง/ช้า กรุณาลองรีเฟรชอีกครั้ง";
+    if (/timeout/i.test(msg)) return "การเชื่อมต่อช้า/ขัดข้อง กรุณาลองใหม่";
     return "";
   };
 
   return (
     <AppShell title="งานของฉัน">
-      {/* แจ้งสถานะ + เครื่องมือช่วยเมื่อไม่มี UID */}
+      {/* แบนเนอร์ช่วยเหลือเมื่อยังไม่มี UID */}
       {!hasUid && (
         <div className="mb-4 p-3 rounded-xl bg-yellow-900/20 border border-yellow-800 text-yellow-200 text-sm">
-          ยังไม่พบ UID ในระบบ — กรุณาเข้าสู่ระบบด้วย LINE หรือตั้งค่า UID ด้วยตัวเอง
+          ยังไม่พบ UID — กรุณาเข้าสู่ระบบ LINE หรือกรอก UID เอง
           <div className="mt-2 flex flex-col gap-2">
             {LIFF_URL ? (
               <a href={LIFF_URL} className="underline text-emerald-400">
@@ -157,13 +165,13 @@ export default function JobsPage() {
               </a>
             ) : (
               <div className="text-xs opacity-80">
-                (ยังไม่ได้ตั้งค่า <code>NEXT_PUBLIC_LIFF_ID</code> จึงซ่อนปุ่ม LINE)
+                (ไม่ได้ตั้งค่า <code>NEXT_PUBLIC_LIFF_ID</code> จึงซ่อนปุ่ม LINE)
               </div>
             )}
             <div className="flex gap-2 items-center">
               <input
                 className="w-full rounded-lg bg-neutral-900 px-3 py-2 outline-none"
-                placeholder="กรอก UID ด้วยตนเอง เช่น Uxxxxxxxxxxxxxxxxxxxx"
+                placeholder="กรอก UID เช่น Uxxxxxxxxxxxxxxxxxxxx"
                 value={uidInput}
                 onChange={(e) => setUidInput(e.target.value)}
               />
@@ -183,26 +191,20 @@ export default function JobsPage() {
 
       {!data?.ok && (
         <div className="text-red-400 text-sm mb-3">
-          โหลดไม่ได้: {data?.error || "-"}{" "}
-          {!hasUid && "(กรุณาเข้าสู่ระบบ/ผูก UID)"}
+          โหลดไม่ได้: {data?.error || "-"} {!hasUid && "(กรุณาเข้าสู่ระบบ/ผูก UID)"}
           {explainError(data?.error) && (
             <div className="text-xs text-red-300 mt-1">{explainError(data?.error)}</div>
           )}
         </div>
       )}
 
-      {/* แถบ debug */}
+      {/* Debug bar เล็ก ๆ */}
       <div className="text-xs text-neutral-400 mb-3">
         วันที่ค้นหา: <code className="px-1 bg-neutral-800 rounded">{q.date}</code> •{" "}
-        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> •{" "}
-        แหล่งข้อมูล:{" "}
+        ช่วงวัน: <code className="px-1 bg-neutral-800 rounded">±{q.range}</code> • แหล่งข้อมูล:{" "}
         <span className="ml-1">ทั่วไป={data?.sources?.general?.name || "-"}</span>,{" "}
         <span>Service={data?.sources?.service?.name || "-"}</span>{" "}
-        <button
-          className="ml-2 underline"
-          onClick={() => setQ((prev) => ({ ...prev }))}
-          title="รีเฟรช"
-        >
+        <button className="ml-2 underline" onClick={() => setQ((p) => ({ ...p }))}>
           รีเฟรช
         </button>
       </div>
@@ -223,17 +225,11 @@ export default function JobsPage() {
               </div>
               <div className="flex gap-2">
                 {j.serviceId ? (
-                  <Link
-                    href={`/report/${encodeURIComponent(j.serviceId)}`}
-                    className="underline text-emerald-400"
-                  >
+                  <Link href={`/report/${encodeURIComponent(j.serviceId)}`} className="underline text-emerald-400">
                     เปิดรายงาน
                   </Link>
                 ) : (
-                  <Link
-                    href={`/tech/visit/${encodeURIComponent(j.visitId || j.rowIndex)}`}
-                    className="underline"
-                  >
+                  <Link href={`/tech/visit/${encodeURIComponent(j.visitId || j.rowIndex)}`} className="underline">
                     เริ่มบันทึก
                   </Link>
                 )}
@@ -259,17 +255,11 @@ export default function JobsPage() {
               </div>
               <div className="flex gap-2">
                 {j.serviceId ? (
-                  <Link
-                    href={`/report/${encodeURIComponent(j.serviceId)}`}
-                    className="underline text-emerald-400"
-                  >
+                  <Link href={`/report/${encodeURIComponent(j.serviceId)}`} className="underline text-emerald-400">
                     เปิดรายงาน
                   </Link>
                 ) : (
-                  <Link
-                    href={`/tech/visit/${encodeURIComponent(j.visitId || j.rowIndex)}`}
-                    className="underline"
-                  >
+                  <Link href={`/tech/visit/${encodeURIComponent(j.visitId || j.rowIndex)}`} className="underline">
                     เริ่มบันทึก
                   </Link>
                 )}
