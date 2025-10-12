@@ -72,10 +72,20 @@
     try{
       await liff.init({ liffId: LIFF_ID });
 
-      if (!liff.isLoggedIn()) { liff.login(); return; }
-      if (!liff.isInClient()) { setStatus('กรุณาเปิดลิงก์นี้ในแอป LINE', true); return; }
+      // ===== รองรับ external browser login =====
+      if (!liff.isLoggedIn()) {
+        liff.login({
+          withLoginOnExternalBrowser: true,
+          // ต้อง whitelist URL นี้ไว้ใน LINE Login → Callback URL
+          redirectUri: window.location.href
+        });
+        return; // จะกลับมาหน้าเดิมหลัง login
+      }
 
+      // *** ไม่บังคับต้องอยู่ในแอป LINE อีกต่อไป ***
       const prof = await liff.getProfile();
+      const idToken = liff.getIDToken(); // ใช้ส่งไป backend verify ได้ (ถ้าต้องการ)
+
       document.getElementById('display').value = prof.displayName || '';
       setStatus('พบบัญชี: ' + (prof.displayName||''));
 
@@ -116,7 +126,8 @@
           lineUid: prof.userId,
           display: prof.displayName || '',
           phone,
-          team_name: team
+          team_name: team,
+          idToken // เผื่อ backend จะ verify กับ LINE
         };
 
         try{
@@ -148,6 +159,7 @@
         }
       });
     }catch(err){
+      console.error(err);
       setStatus('Error: ' + String(err), true);
     }
   })();
