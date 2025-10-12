@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Siamguard – Field App</title>
+  <!-- อย่าใช้ <base href="/servicereport/"> อีกต่อไป -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,sans-serif;padding:16px}
+    label{display:block;margin:12px 0 6px}
+    input,select,button{width:100%;padding:10px;font-size:16px}
+    button[disabled]{opacity:.6}
+    .hint{color:#666;font-size:14px}
+    .error{color:#c00}
+  </style>
+</head>
+<body>
+  <h2>ลงทะเบียนพนักงาน</h2>
+  <div id="status" class="hint">กำลังตรวจสอบ ...</div>
+
+  <form id="form" style="display:none">
+    <label>ชื่อที่แสดง</label>
+    <input id="display" readonly />
+
+    <label>เบอร์โทร</label>
+    <input id="phone" placeholder="08xxxxxxxx" inputmode="tel" autocomplete="tel" />
+    <div id="phoneHint" class="hint"></div>
+
+    <label>ทีม</label>
+    <select id="team"><option value="">-- เลือกทีม --</option></select>
+
+    <button id="btnSave" type="submit" style="margin-top:12px">บันทึก</button>
+  </form>
+
+  <script>
+  // ====== ตั้งค่า ======
+  const LIFF_ID = '2007877821-J8jyx6YN';
+  const GAS = 'https://script.google.com/macros/s/AKfycbyJucHRq6vbApfOgxelVKpsa0rGgKv_tKbrui--_CJsiXGqvaEqEvfeubSOize3UMaU/exec';
+
+  // ====== Utils ======
+  function setStatus(msg, isError=false){
+    const el = document.getElementById('status');
+    el.textContent = msg || '';
+    el.className = (isError ? 'hint error' : 'hint');
+  }
+  function setSaving(b){ document.getElementById('btnSave').disabled = !!b; }
+
+  // keep 0 นำหน้า + บังคับให้เหลือ 10 หลัก
+  function normalizePhone(p){
+    let s = String(p||'').replace(/\D/g,'');
+    if (s.length === 9) s = '0' + s;
+    if (s.length > 10) s = s.slice(-10);
+    if (s.length === 10 && s[0] !== '0') s = '0' + s.slice(1);
+    return s;
+  }
+
+  async function loadTeams(){
+    const r = await fetch(GAS + '?route=teams.list', { cache:'no-store' });
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'load teams failed');
+    const sel = document.getElementById('team');
+    (j.data||[]).filter(t=>t.active).forEach(t=>{
+      const o = document.createElement('option');
+      o.value = t.team_name; o.textContent = t.team_name;
+      sel.appendChild(o);
+    });
+  }
+
+  (async ()=>{
+    try{
+      // ✅ external browser login ต้องอยู่ใน init
+      await liff.init({
+        liffId: LIFF_ID,
+        withLoginOnExternalBrowser: true
+      });
+
+      if (!liff.isLoggedIn()) {
+        // ใช้ redirectUri เป็นหน้าปัจจุบัน (ปลอดภัย ไม่โดน 400)
+        liff.login({ redirectUri: window.location.href });
+        return;
+      }
+
+      // ไม่จำเป็นต้องอยู่ในแอป LINE แล้ว
+      const prof = await liff.getProfile();
+      const idToken = liff.getIDToken();
+
+      document.getElementById('display').value = prof.displayName || '';
+      setStatus('พบบัญชี: ' + (prof.displayName||''));
+
+      await loadTeams();
+      document.getElementById('form').style.display = 'block';
+
+      // autofill phone จาก localStorage (พร้อม normalize)
+      const saved = localStorage.getItem('my_phone')||'';
+      if(saved){
+        const n = normalizePhone(saved);
+        document.getElementById('phone').value = n;
+      }
+
+      // แสดงตัวอย่าง/เตือนทันทีขณะพิมพ์
+      const phoneEl = document.getElementById('phone');
+      const phoneHint = document.getElementById('phoneHint');
+      phoneEl.addEventListener('input', () => {
+        const n = normalizePhone(phoneEl.value);
+        phoneHint.textContent = n ? `จะบันทึกเป็น: ${n}` : '';
+      });
+
+      document.getElementById('form').addEventListener('submit', async (e)=>{
+        e.preventDefault();
+
+        let phone = normalizePhone(document.getElementById('phone').value);
+        document.getElementById('phone').value = phone;
+        phoneHint.textContent = phone ? `จะบันทึกเป็น: ${phone}` : '';
+
+        const team  = document.getElementById('team').value.trim();
+
+        if (!team){ setStatus('กรุณาเลือกทีม', true); return; }
+        if (phone && phone.length !== 10){ setStatus('กรุณากรอกเบอร์โทร 10 หลัก', true); return; }
+
+        if (phone) localStorage.setItem('my_phone', phone);
+
+        const payload = {
+          lineUid: prof.userId,
+          display: prof.displayName || '',
+          phone,
+          team_name: team,
+          idToken
+        };
+
+        try{
+          setSaving(true);
+          setStatus('กำลังบันทึก…');
+
+          const res = await fetch(GAS + '?route=staff.upsert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload),
+            redirect: 'follow',
+            credentials: 'omit'
+          });
+
+          const text = await res.text();
+          let data; try{ data = JSON.parse(text); }catch{ data = { ok:false, error:'bad json', raw:text }; }
+
+          if (data.ok){
+            setStatus('บันทึกเรียบร้อย ✅');
+
+            // เก็บข้อมูลไว้ใช้หน้าอื่น
+            localStorage.setItem('sg_staff_phone', phone || '');
+            localStorage.setItem('sg_staff_team',  team  || '');
+            localStorage.setItem('sg_staff_name',  prof.displayName || '');
+            localStorage.setItem('sg_staff_uid',   prof.userId || '');
+
+            const target = 'https://servicereport.siamguards.com/tech/jobs';
+
+            if (liff.isInClient()) {
+              liff.openWindow({ url: target, external: true });
+              setTimeout(() => liff.closeWindow(), 300);
+            } else {
+              location.assign(target);
+            }
+          } else {
+            setStatus('บันทึกล้มเหลว: ' + (data.error || 'unknown'), true);
+          }
+        }catch(err){
+          setStatus('เกิดข้อผิดพลาด: ' + String(err), true);
+        }finally{
+          setSaving(false);
+        }
+      });
+    }catch(err){
+      console.error(err);
+      setStatus('Error: ' + String(err), true);
+    }
+  })();
+  </script>
+</body>
+</html>
