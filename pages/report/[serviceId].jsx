@@ -40,11 +40,17 @@ function adaptReportPayload(json, base) {
   };
 
   // signature: url / dataURL / fileId -> file64
-  const sigData = pick(h, ["signatureDataUrl", "signature", "sigDataUrl"]);
-  const sigUrl  = pick(h, ["signature_url", "signatureUrl", "customerSignatureUrl"]);
-  const sigId   = pick(h, ["signature_id", "signatureFileId", "sigFileId"]);
-  const signatureUrl =
-    sigData || sigUrl || (sigId && base ? `${base}?route=file64&id=${encodeURIComponent(sigId)}` : "");
+  const sigData = pick(h, ["signatureDataUrl","signature","sigDataUrl"]);
+  const sigUrl  = pick(h, ["signature_url","signatureUrl","customerSignatureUrl"]);
+  const sigId   = pick(h, ["signature_id","signatureFileId","sigFileId"]);
+  const bases = base ? [base, base.replace(/\/exec$/,'/exec')] : [];
+  const sigFromId = (id) => {
+    if (!id || !bases.length) return "";
+    const routes = ["file64","file","image"];
+    for (const b of bases) for (const r of routes) {
+      return `${b}?route=${r}&id=${encodeURIComponent(id)}`;
+    }
+  };
 
   const byZone = new Map();
   const ensure = (z) => {
@@ -69,10 +75,16 @@ function adaptReportPayload(json, base) {
   (json?.photos || json?.images || json?.files || []).forEach((p) => {
     const row = ensure(p.zone || p.area || p.location);
     const url =
-      p.dataUrl || p.dataURL || p.base64 ||
-      p.url ||
-      (p.id && base ? `${base}?route=file64&id=${encodeURIComponent(p.id)}` : "") ||
-      (p.file_id && base ? `${base}?route=file64&id=${encodeURIComponent(p.file_id)}` : "");
+      p.dataUrl || p.dataURL || p.base64 || p.url ||
+      (() => {
+        const fid = p.id || p.file_id || p.fileId;
+        if (!fid || !base) return "";
+        const B = [base, base.replace(/\/exec$/,'/exec')];
+        const routes = ["file64","file","image"];
+        for (const b of B) for (const r of routes) {
+          return `${b}?route=${r}&id=${encodeURIComponent(fid)}`;
+        }
+      })();
     if (!url) return; // skip empty
     row.photos.push({
       url,
@@ -239,6 +251,22 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
           <div>base: {meta.fetchedFrom}</div>
           <div>endpoint: {meta.endpoint}</div>
           <div>raw ok: {String(meta.rawOk)}</div>
+        </div>
+      )}
+      {debug && items?.[0]?.photos?.[0]?.url && (
+        <div className="mb-3 text-xs">
+          sample photo url:{" "}
+          <a className="underline" href={items[0].photos[0].url} target="_blank" rel="noreferrer">
+            {items[0].photos[0].url}
+          </a>
+        </div>
+      )}
+      {debug && signatureUrl && (
+        <div className="mb-3 text-xs">
+          signature url:{" "}
+          <a className="underline" href={signatureUrl} target="_blank" rel="noreferrer">
+            {signatureUrl}
+          </a>
         </div>
       )}
 
