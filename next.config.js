@@ -1,14 +1,20 @@
 /** @type {import('next').NextConfig} */
+const IS_PROD = process.env.VERCEL_ENV === 'production';
+
 const nextConfig = {
   reactStrictMode: true,
-
-  // กัน redirect/rewrite ที่เผลอประกาศไว้ที่ไหนสักแห่ง
+  trailingSlash: false,
+  images: { remotePatterns: [{ protocol: "https", hostname: "**" }] },
   async redirects() {
-    return [];
-  },
-  async rewrites() {
-    return [];
+    if (!IS_PROD) return []; // ปิด redirect บน preview/dev
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.siamguards.com" }],
+        destination: "https://siamguards.com/:path*",
+        permanent: true,
+      },
+    ];
   },
 };
-
 module.exports = nextConfig;
