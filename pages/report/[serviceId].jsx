@@ -19,6 +19,22 @@ function getExecBases() {
   return Array.from(new Set(cands));
 }
 
+/* ---------- helpers for file url ---------- */
+function execWithSuffix(b) {
+  // ให้แน่ใจว่าเป็น .../exec เสมอ
+  return /\/exec$/.test(b) ? b : `${b}/exec`;
+}
+function buildFileUrl(base, id) {
+  if (!base || !id) return "";
+  const b = execWithSuffix(base);
+  // พยายาม route ที่ส่ง binary ก่อน (เหมาะกับ <img src>)
+  const routes = ["file", "image", "file64"];
+  for (const r of routes) {
+    return `${b}?route=${r}&id=${encodeURIComponent(id)}`;
+  }
+  return "";
+}
+
 /* -------------------- normalizer -------------------- */
 function adaptReportPayload(json, base) {
   const h = json?.header || {};
@@ -39,18 +55,14 @@ function adaptReportPayload(json, base) {
     pdfUrl:       pick(h, ["report_url", "pdfUrl"]),
   };
 
-  // signature: url / dataURL / fileId -> file64
+  // ✅ กำหนด signatureUrl ให้ชัดเจน (ลำดับความสำคัญ: dataURL > url > fileId->route)
   const sigData = pick(h, ["signatureDataUrl","signature","sigDataUrl"]);
-  const sigUrl  = pick(h, ["signature_url","signatureUrl","customerSignatureUrl"]);
+  const sigUrlDirect  = pick(h, ["signature_url","signatureUrl","customerSignatureUrl"]);
   const sigId   = pick(h, ["signature_id","signatureFileId","sigFileId"]);
-  const bases = base ? [base, base.replace(/\/exec$/,'/exec')] : [];
-  const sigFromId = (id) => {
-    if (!id || !bases.length) return "";
-    const routes = ["file64","file","image"];
-    for (const b of bases) for (const r of routes) {
-      return `${b}?route=${r}&id=${encodeURIComponent(id)}`;
-    }
-  };
+  const signatureUrl =
+    sigData ||
+    sigUrlDirect ||
+    (sigId && base ? buildFileUrl(base, sigId) : "");
 
   const byZone = new Map();
   const ensure = (z) => {
@@ -74,17 +86,10 @@ function adaptReportPayload(json, base) {
   // photos/files
   (json?.photos || json?.images || json?.files || []).forEach((p) => {
     const row = ensure(p.zone || p.area || p.location);
+    const fid = p.id || p.file_id || p.fileId;
     const url =
       p.dataUrl || p.dataURL || p.base64 || p.url ||
-      (() => {
-        const fid = p.id || p.file_id || p.fileId;
-        if (!fid || !base) return "";
-        const B = [base, base.replace(/\/exec$/,'/exec')];
-        const routes = ["file64","file","image"];
-        for (const b of B) for (const r of routes) {
-          return `${b}?route=${r}&id=${encodeURIComponent(fid)}`;
-        }
-      })();
+      (fid && base ? buildFileUrl(base, fid) : "");
     if (!url) return; // skip empty
     row.photos.push({
       url,
@@ -107,8 +112,8 @@ function withTimeout(ms = 10000) {
 async function tryFetchReport(serviceId) {
   const bases = getExecBases();
   const routes = [
-    (b) => `${b}?route=report-by-id&service_id=${encodeURIComponent(serviceId)}`,
-    (b) => `${b}?route=report&id=${encodeURIComponent(serviceId)}`,
+    (b) => `${execWithSuffix(b)}?route=report-by-id&service_id=${encodeURIComponent(serviceId)}`,
+    (b) => `${execWithSuffix(b)}?route=report&id=${encodeURIComponent(serviceId)}`,
   ];
 
   let lastErr = "";
@@ -136,7 +141,7 @@ async function tryValidate(serviceId) {
   for (const b of bases) {
     const { signal, clear } = withTimeout(8000);
     try {
-      const url = `${b}?route=validate&service_id=${encodeURIComponent(serviceId)}`;
+      const url = `${execWithSuffix(b)}?route=validate&service_id=${encodeURIComponent(serviceId)}`;
       const res = await fetch(url, { redirect: "follow", cache: "no-store", signal });
       const json = await res.json().catch(() => ({}));
       clear();
@@ -148,7 +153,7 @@ async function tryValidate(serviceId) {
 
 /* -------------------- SSR -------------------- */
 export async function getServerSideProps(ctx) {
-  const REPORT_VIEW_VERSION = "r5"; // <-- เปลี่ยนเลขทุกครั้งที่แก้
+  const REPORT_VIEW_VERSION = "r6";
   const serviceId = String(ctx.params?.serviceId || "");
   const debug = String(ctx.query?.debug || "") === "1";
 
@@ -156,7 +161,7 @@ export async function getServerSideProps(ctx) {
     return { props: { serviceId, data: null, error: "missing id", debug, meta: null, __v: REPORT_VIEW_VERSION } };
   }
 
-  try { 
+  try {
     ctx.res.setHeader("Cache-Control", "no-store, max-age=0");
     ctx.res.setHeader("x-report-view-version", REPORT_VIEW_VERSION);
   } catch {}
