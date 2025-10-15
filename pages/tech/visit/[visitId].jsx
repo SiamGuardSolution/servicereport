@@ -14,16 +14,15 @@ const summarizeChems = (chems=[]) =>
   chems.map(c => [c.name, c.qty ? `(${c.qty})` : ''].filter(Boolean).join(' ')).join(' • ');
 
 const CHEM_OPTIONS = [
-  { name: 'Fipronil 0.05%',     link: 'https://example.com/fipronil',   defaultQty: '10 ml' },
-  { name: 'Bendiocarb 80%',     link: 'https://example.com/bendiocarb', defaultQty: '1 sachet' },
-  { name: 'Imidacloprid 5 SC',  link: 'https://example.com/imidacloprid', defaultQty: '20 ml' },
+  { name: 'Fipronil 0.05%',       link: 'https://example.com/fipronil',     defaultQty: '10 ml' },
+  { name: 'Bendiocarb 80%',       link: 'https://example.com/bendiocarb',   defaultQty: '1 sachet' },
+  { name: 'Imidacloprid 5 SC',    link: 'https://example.com/imidacloprid', defaultQty: '20 ml' },
   { name: 'Gel Bait (Cockroach)', defaultQty: '1-2 g/จุด' },
 ];
 
 const FRONT_AREA = 'หน้าบ้าน (ติดเลขที่บ้าน)';
 
-/* ---------- ✨ helpers เพื่อแสดง ID ยาวให้สวย + คัดลอกได้ ---------- */
-
+/* ---------- helpers: แสดง ID ยาวให้สวย + คัดลอกได้ ---------- */
 function formatId(value, head = 10, tail = 6) {
   if (!value) return '-';
   const s = String(value);
@@ -55,41 +54,55 @@ function CopyableField({ label, value, className = '' }) {
 }
 
 /* ---------------- GAS base & mapping helpers ---------------- */
-
-function getGasBase(){
+// คืน URL ของ /exec ที่ใช้ได้จริง โดยไม่เติม /exec ซ้ำ
+function getExecUrl(){
   const cands = [
     process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY,
+    process.env.NEXT_PUBLIC_GAS_EXEC,
     process.env.NEXT_PUBLIC_GAS_EXEC_BACKUP,
     process.env.GAS_EXEC,
-  ].filter(Boolean);
+    process.env.NEXT_PUBLIC_API_BASE,
+  ].filter(Boolean).map(s => String(s).trim());
+
   if (!cands.length) return '';
-  return String(cands[0]).replace(/\/+$/,'');
+  let u = cands[0];
+  // เอา slash ท้ายออก
+  u = u.replace(/\/+$/,'');
+  // ถ้ายังไม่มี /exec ให้เติม
+  if (!/\/exec$/.test(u)) u = `${u}/exec`;
+  return u;
 }
 
+// ใช้ doGet (route) สำหรับ mapping (ฝั่ง GAS handler: setServiceIndex)
 async function setServiceIndex({ visitId, serviceId, date='', customer='', fileId='', sheet='', row='' }){
-  const base = getGasBase();
-  if (!base || !visitId || !serviceId) return;
+  const execUrl = getExecUrl();
+  if (!execUrl || !visitId || !serviceId) return;
+
   const qs = new URLSearchParams({
     route: 'setServiceIndex',
     visitId: String(visitId),
     serviceId: String(serviceId),
     date, customer, fileId, sheet, row
   });
+
   try {
-    await fetch(`${base}/exec?${qs.toString()}`, { method:'GET', redirect:'follow' });
+    const res = await fetch(`${execUrl}?${qs.toString()}`, { method:'GET', redirect:'follow' });
+    if (!res.ok) {
+      const t = await res.text();
+      console.warn('setServiceIndex non-200:', res.status, t.slice(0,200));
+    }
   } catch (err) {
     console.warn('setServiceIndex failed:', err);
   }
 }
 
-/** ====== การ์ดบังคับใบเดียว ====== */
 function RequiredMainCard({ hasPipe, value, onChange, chemOptions }) {
   const set = (patch) => onChange({ ...value, ...patch });
   const slots = [
-    { key: 'front_house', label: 'ภาพหน้าบ้าน (ติดเลขที่บ้าน)', enabled: true },
-    { key: 'pipe_injection', label: 'ภาพขณะอัดน้ำยาลงท่อ', enabled: !!hasPipe },
-    { key: 'drill_injection', label: 'ภาพขณะเจาะพื้นอัดน้ำยา', enabled: !hasPipe },
-    { key: 'indoor_spray', label: 'ภาพการฉีดพ่นภายใน', enabled: true },
+    { key: 'front_house',      label: 'ภาพหน้าบ้าน (ติดเลขที่บ้าน)', enabled: true },
+    { key: 'pipe_injection',   label: 'ภาพขณะอัดน้ำยาลงท่อ',           enabled: !!hasPipe },
+    { key: 'drill_injection',  label: 'ภาพขณะเจาะพื้นอัดน้ำยา',        enabled: !hasPipe },
+    { key: 'indoor_spray',     label: 'ภาพการฉีดพ่นภายใน',             enabled: true },
   ];
   const photos = value.photos || {};
   const updateSlot = (k, v) => set({ photos: { ...photos, [k]: v } });
@@ -130,7 +143,6 @@ function RequiredMainCard({ hasPipe, value, onChange, chemOptions }) {
   );
 }
 
-/** การ์ดรายการงานทั่วไป */
 function JobItem({ item, index, onChange, onRemove, chemOptions }) {
   const chemSummary = useMemo(() => summarizeChems(item.chems), [item.chems]);
   const set = (patch) => onChange({ ...item, ...patch });
@@ -168,7 +180,8 @@ function JobItem({ item, index, onChange, onRemove, chemOptions }) {
 }
 
 export default function Visit(){
-  const { query:{ visitId } } = useRouter();
+  const router = useRouter();
+  const visitId = router?.query?.visitId;
 
   const [isClient, setIsClient] = useState(false);
   useEffect(()=>{ setIsClient(true); }, []);
@@ -190,8 +203,6 @@ export default function Visit(){
   const [err, setErr]     = useState('');
   const [done, setDone]   = useState(false);
   const [result, setResult]= useState(null);
-
-  const copy = async (txt) => { try { await navigator.clipboard.writeText(String(txt||'')); alert('คัดลอกแล้ว'); } catch {} };
 
   const dataUrlToFile = async (dataUrl, name='signature.png') => {
     const res  = await fetch(dataUrl);
@@ -226,12 +237,12 @@ export default function Visit(){
 
       const uploadedAll = [];
 
-      // รูปจากการ์ดบังคับ
+      // 1) อัปโหลดรูปจากการ์ดบังคับ
       const slots = [
-        { key: 'front_house', label: 'ภาพหน้าบ้าน (ติดเลขที่บ้าน)', enabled: true },
-        { key: 'pipe_injection', label: 'ภาพขณะอัดน้ำยาลงท่อ', enabled: !!hasPipe },
-        { key: 'drill_injection', label: 'ภาพขณะเจาะพื้นอัดน้ำยา', enabled: !hasPipe },
-        { key: 'indoor_spray', label: 'ภาพการฉีดพ่นภายใน', enabled: true },
+        { key: 'front_house',     label: 'ภาพหน้าบ้าน (ติดเลขที่บ้าน)', enabled: true },
+        { key: 'pipe_injection',  label: 'ภาพขณะอัดน้ำยาลงท่อ',          enabled: !!hasPipe },
+        { key: 'drill_injection', label: 'ภาพขณะเจาะพื้นอัดน้ำยา',       enabled: !hasPipe },
+        { key: 'indoor_spray',    label: 'ภาพการฉีดพ่นภายใน',            enabled: true },
       ];
       for (const s of slots) {
         if (!s.enabled) continue;
@@ -246,7 +257,7 @@ export default function Visit(){
         uploadedAll.push(...up);
       }
 
-      // รูปจากรายการงานอื่น ๆ
+      // 2) อัปโหลดรูปจากรายการเสริม
       for (const it of items) {
         const autoCap = [it.area, summarizeChems(it.chems)].filter(Boolean).join(' • ');
         const filesWithZone = (it.photos || []).map((p, i) => ({
@@ -260,14 +271,14 @@ export default function Visit(){
         }
       }
 
-      // เซ็น
+      // 3) เซ็น
       if (sign) {
         const sig = await dataUrlToFile(sign, `signature-${visitId||'unknown'}.png`);
         const up = await uploadImages([{ zone:'signature', file: sig, caption:'signature' }]);
         uploadedAll.push(...up);
       }
 
-      // บันทึกโน้ต
+      // 4) โน้ตสรุป
       const frontLine = `1) ${FRONT_AREA}${requiredMain.chems?.length ? ' | เคมี: ' + summarizeChems(requiredMain.chems) : ''}`;
       const otherLines = items.map((it, i) => {
         const sum = summarizeChems(it.chems);
@@ -287,13 +298,14 @@ export default function Visit(){
         images: uploadedAll
       };
 
-      // === สร้าง Service Report ===
+      // 5) สร้าง Service Report (POST ?path=submit)
       const res = await createServiceReport(payload);
       if (!res || res.ok === false) {
+        // เผื่อฝั่ง API ส่งไม่ใช่ JSON มาตามสัญญา
         throw new Error(res?.error || 'บันทึกรายงานไม่สำเร็จ');
       }
 
-      // รองรับหลายทรงผลลัพธ์จาก GAS
+      // normalize serviceId และ reportUrl
       const serviceId =
         res?.result?.service_id ??
         res?.result?.id ??
@@ -306,16 +318,14 @@ export default function Visit(){
         res?.report_url ??
         null;
 
-      // ถ้ายังหาไม่ได้ ให้แจ้งรายละเอียดคร่าว ๆ ไว้ debug
       if (!serviceId) {
         console.warn('createServiceReport raw response =', res);
         throw new Error('createServiceReport: ไม่มี service_id ในผลลัพธ์');
       }
 
-      // เก็บผลแบบ normalized
       setResult({ service_id: serviceId, report_url: reportUrl });
 
-      // === mapping visitId -> serviceId ไปที่ GAS ===
+      // 6) mapping visitId -> serviceId (GET ?route=setServiceIndex)
       await setServiceIndex({
         visitId: String(visitId || ''),
         serviceId: String(serviceId),
@@ -323,7 +333,7 @@ export default function Visit(){
         customer: payload.customerName || ''
       });
 
-      // === บันทึกเคมี ===
+      // 7) บันทึกเคมี (POST ?path=append-chemicals)
       const chemList = [
         ...(requiredMain.chems || []).map(c => ({
           zone: FRONT_AREA, name: c.name, qty: c.qty || '', remark: c.remark || '', link: c.link || ''
@@ -335,7 +345,7 @@ export default function Visit(){
         )
       ];
       if (chemList.length) {
-        const chemRes = await appendChemicals(res.result.service_id, chemList);
+        const chemRes = await appendChemicals(serviceId, chemList); // << ใช้ serviceId ที่ normalize แล้ว
         if (!chemRes || chemRes.ok === false) {
           throw new Error(chemRes?.error || 'บันทึกเคมีไม่สำเร็จ');
         }
@@ -344,7 +354,7 @@ export default function Visit(){
       setDone(true);
       alert('บันทึกรายงานเรียบร้อย ✅');
     } catch (e) {
-      setErr(String(e.message || e));
+      setErr(String(e?.message || e));
     } finally {
       setBusy(false);
     }
@@ -412,7 +422,6 @@ export default function Visit(){
           <div className="mt-3 rounded-2xl bg-neutral-800 p-4 text-sm text-white space-y-2">
             <div className="font-semibold">สรุปการบันทึก</div>
 
-            {/* Service ID แสดงแบบย่อ + คัดลอกได้ */}
             <CopyableField label="Service ID:" value={result.service_id} />
 
             <div className="flex items-center gap-2">

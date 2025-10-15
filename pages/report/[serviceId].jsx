@@ -1,9 +1,6 @@
 // pages/report/[serviceId].jsx
 import React, { useEffect, useState } from "react";
 
-/** ---------------------------
- * Exec bases: รองรับหลายค่า + comma-separated
- * --------------------------- */
 function getExecBases() {
   const cands = [
     process.env.NEXT_PUBLIC_GAS_EXEC_PRIMARY,
@@ -22,9 +19,6 @@ function getExecBases() {
   return Array.from(new Set(cands)); // unique
 }
 
-/** ---------------------------
- * Adapter: รวมสคีมาเก่า/ใหม่ให้เป็นออบเจ็กต์เดียวกับ UI
- * --------------------------- */
 function adaptReportPayload(json) {
   const h = json?.header || {};
   const svcId = h.service_id || h.logId || "";
@@ -72,16 +66,12 @@ function adaptReportPayload(json) {
   return { ...payload, items: Array.from(byZone.values()) };
 }
 
-/** ---------------------------
- * Fetch helpers (timeout + no-store)
- * --------------------------- */
 function withTimeout(ms = 10000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort("timeout"), ms);
   return { signal: ctl.signal, clear: () => clearTimeout(t) };
 }
 
-/** ลองดึงรายงานจากหลาย base + หลาย route จนสำเร็จ */
 async function tryFetchReport(serviceId) {
   const bases = getExecBases();
   const routes = [
@@ -111,7 +101,6 @@ async function tryFetchReport(serviceId) {
   throw new Error(lastErr || "fetch failed");
 }
 
-/** (ออปชัน) เรียก /validate ถ้ามี */
 async function tryValidate(serviceId) {
   const bases = getExecBases();
   for (const b of bases) {
@@ -127,9 +116,6 @@ async function tryValidate(serviceId) {
   return null;
 }
 
-/** ---------------------------
- * SSR
- * --------------------------- */
 export async function getServerSideProps(ctx) {
   const serviceId = String(ctx.params?.serviceId || "");
   const debug = String(ctx.query?.debug || "") === "1";
@@ -155,9 +141,6 @@ export async function getServerSideProps(ctx) {
   }
 }
 
-/** ---------------------------
- * Fallback client fetch (เผื่อ SSR ไม่มี ENV)
- * --------------------------- */
 function ClientFallback({ serviceId, onLoaded }) {
   const [state, setState] = useState({ loading: true, error: "", data: null, validate: null });
   useEffect(() => {
@@ -183,9 +166,6 @@ function ClientFallback({ serviceId, onLoaded }) {
   return null;
 }
 
-/** ---------------------------
- * UI
- * --------------------------- */
 export default function ServiceReportPage({ serviceId, data, error, validate, debug, meta }) {
   // Fallback client ถ้า SSR ล้มเหลว
   const [clientData, setClientData] = useState(null);

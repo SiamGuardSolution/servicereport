@@ -1,15 +1,30 @@
-node_modules 
-.next 
-.env.local 
-desktop.ini 
-public/desktop.ini 
+# Node & Next.js
 node_modules/
 .next/
 out/
-dist/
-public/
-.vscode/
-.env*
+.vercel/
+
+# Logs
 *.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS junk
+.DS_Store
+Thumbs.db
 desktop.ini
-public/desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Misc cache
+.cache/
+.eslintcache

@@ -21,7 +21,6 @@ export default function ChemicalEditor({
   const qtyInputRef = useRef(null);
 
   useEffect(() => {
-    // โฟกัสช่องชื่อรอบแรก
     nameInputRef.current?.focus();
   }, []);
 

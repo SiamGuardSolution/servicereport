@@ -1,19 +1,6 @@
 // components/NetBadge.jsx
 import React, { useEffect, useRef, useState } from 'react';
 
-/**
- * แสดงสถานะเครือข่าย:
- * - online = true: มีสัญญาณ (navigator.onLine) และถ้ากำหนด pingUrl ก็ ping ผ่าน
- * - SSR-safe: ไม่แตะ window/navigator จนกว่าจะอยู่ฝั่ง client
- *
- * Props:
- *  - pingUrl?: string            // ใส่เพื่อเช็คว่าต่อปลายทางได้จริง (เช่น GAS EXEC URL)
- *  - intervalMs?: number         // รอบ ping (ms) ค่าเริ่มต้น 15000
- *  - timeoutMs?: number          // timeout ต่อการ ping (ms) ค่าเริ่มต้น 3000
- *  - className?: string
- *  - onChange?: (online:boolean) => void
- *  - labels?: { online?: string; offline?: string }
- */
 export default function NetBadge({
   pingUrl,
   intervalMs = 15000,

@@ -6,16 +6,6 @@ function ConditionalWrap({ condition, wrap, children }) {
   return condition ? wrap(children) : children;
 }
 
-/**
- * Props:
- *  - job: {
- *      visitId, customerName, address, date, visitNo,
- *      saved?, hasReport?, status?, serviceType?
- *    }
- *  - href?: string                 // เส้นทางไปหน้าบันทึก/แก้ไขรายงาน
- *  - onOpen?: () => void           // ใช้แทน href กรณีต้องเปิด Dialog
- *  - className?: string
- */
 export default function TechJobCard({ job = {}, href, onOpen, className = '' }) {
   const isSaved = useMemo(() =>
     job?.saved === true || job?.hasReport === true || job?.status === 'saved'
