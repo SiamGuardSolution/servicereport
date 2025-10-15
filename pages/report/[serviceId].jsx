@@ -136,23 +136,27 @@ async function tryValidate(serviceId) {
 
 /* -------------------- SSR -------------------- */
 export async function getServerSideProps(ctx) {
+  const REPORT_VIEW_VERSION = "r5"; // <-- เปลี่ยนเลขทุกครั้งที่แก้
   const serviceId = String(ctx.params?.serviceId || "");
   const debug = String(ctx.query?.debug || "") === "1";
 
   if (!serviceId) {
-    return { props: { serviceId, data: null, error: "missing id", debug, meta: null } };
+    return { props: { serviceId, data: null, error: "missing id", debug, meta: null, __v: REPORT_VIEW_VERSION } };
   }
 
-  try { ctx.res.setHeader("Cache-Control", "no-store, max-age=0"); } catch {}
+  try { 
+    ctx.res.setHeader("Cache-Control", "no-store, max-age=0");
+    ctx.res.setHeader("x-report-view-version", REPORT_VIEW_VERSION);
+  } catch {}
 
   try {
     const { json, url, base } = await tryFetchReport(serviceId);
     const data = adaptReportPayload(json, base);
     const validate = await tryValidate(serviceId).catch(() => null);
     const meta = debug ? { fetchedFrom: base, endpoint: url, rawOk: json?.ok } : null;
-    return { props: { serviceId, data, validate: validate || null, error: null, debug, meta } };
+    return { props: { serviceId, data, validate: validate || null, error: null, debug, meta, __v: REPORT_VIEW_VERSION } };
   } catch (e) {
-    return { props: { serviceId, data: null, error: String(e?.message || e), debug, meta: null } };
+    return { props: { serviceId, data: null, error: String(e?.message || e), debug, meta: null, __v: REPORT_VIEW_VERSION } };
   }
 }
 
@@ -184,7 +188,7 @@ function ClientFallback({ serviceId, onLoaded }) {
 }
 
 /* -------------------- Page -------------------- */
-export default function ServiceReportPage({ serviceId, data, error, validate, debug, meta }) {
+export default function ServiceReportPage({ serviceId, data, error, validate, debug, meta, __v }) {
   const [clientData, setClientData] = useState(null);
   const effective = clientData?.data || data;
   const effectiveValidate = clientData?.validate || validate;
@@ -227,7 +231,7 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
 
   return (
     <main className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">รายงานหน้างาน</h1>
+      <h1 className="text-2xl font-bold mb-4">รายงานหน้างาน <span className="text-xs opacity-50">({__v})</span></h1>
 
       {debug && meta && (
         <div className="mb-4 rounded-md border border-cyan-700/40 bg-cyan-900/20 p-3 text-cyan-300 text-xs">
