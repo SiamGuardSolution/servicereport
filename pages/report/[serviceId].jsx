@@ -19,20 +19,71 @@ function getExecBases() {
   return Array.from(new Set(cands));
 }
 
-/* ---------- helpers for file url ---------- */
+/* ---------- helpers for file url / data url ---------- */
 function execWithSuffix(b) {
   // ให้แน่ใจว่าเป็น .../exec เสมอ
   return /\/exec$/.test(b) ? b : `${b}/exec`;
 }
+
+// สำหรับกรณีที่ endpoint ส่ง binary ได้ (ใช้กับ <img src> ได้เลย)
+// NOTE: คืนค่าเป็น route=file เป็นหลัก ถ้าแบ็กเอนด์รองรับ
 function buildFileUrl(base, id) {
   if (!base || !id) return "";
   const b = execWithSuffix(base);
-  // พยายาม route ที่ส่ง binary ก่อน (เหมาะกับ <img src>)
-  const routes = ["file", "image", "file64"];
-  for (const r of routes) {
-    return `${b}?route=${r}&id=${encodeURIComponent(id)}`;
+  return `${b}?route=file&id=${encodeURIComponent(id)}`;
+}
+
+// ดึง base64 จาก route=file64 แล้วแปลงเป็น data URL
+async function fetchFileAsDataURL(fileId, bases) {
+  const list = bases?.length ? bases : getExecBases();
+  const errors = [];
+  for (const base of list) {
+    try {
+      const url = `${execWithSuffix(base)}?route=file64&id=${encodeURIComponent(fileId)}`;
+      const res = await fetch(url, { method: "GET", cache: "no-store" });
+      const text = await res.text();
+
+      // รองรับทั้ง JSON { ok, mime, data } และ base64 string ตรงๆ
+      let mime = "image/jpeg";
+      let b64 = "";
+      try {
+        const j = JSON.parse(text);
+        if (j?.data || j?.base64) {
+          mime = j.mime || mime;
+          b64 = j.data || j.base64;
+        } else {
+          b64 = text.trim();
+        }
+      } catch {
+        b64 = text.trim();
+      }
+
+      if (!b64 || b64.length < 50) throw new Error("empty base64");
+      return `data:${mime};base64,${b64}`;
+    } catch (e) {
+      errors.push(String(e));
+    }
   }
-  return "";
+  throw new Error(errors.join(" | "));
+}
+
+// คอมโพเนนต์โหลดรูปด้วย fileId (ใช้ได้ทั้งรูปงานและลายเซ็น)
+function ImageFromFileId({ fileId, className = "", alt = "" }) {
+  const [src, setSrc] = React.useState("");
+  const [err, setErr] = React.useState("");
+
+  useEffect(() => {
+    let alive = true;
+    if (!fileId) { setErr("missing fileId"); return; }
+    fetchFileAsDataURL(fileId)
+      .then((u) => { if (alive) setSrc(u); })
+      .catch((e) => { if (alive) setErr(String(e)); });
+    return () => { alive = false; };
+  }, [fileId]);
+
+  if (err) return <div className={className} style={{opacity:.7}}><small>โหลดรูปไม่สำเร็จ</small></div>;
+  if (!src) return <div className={className}><small>กำลังโหลดรูป…</small></div>;
+  return <img src={src} alt={alt} className={className} loading="lazy" />;
 }
 
 /* -------------------- normalizer -------------------- */
@@ -48,6 +99,7 @@ function adaptReportPayload(json, base) {
     serviceId,
     visitId,
     createdAt:    pick(h, ["date", "serviceDate", "created_at", "createdAt", "VISIT_DATE"]),
+    // staffName ใช้ชื่อทีม/ช่าง
     staffName:    pick(h, ["staff_name", "staffName", "teamName", "team_name", "technicianName", "TECH"]),
     customerName: pick(h, ["customer_name", "customerName", "client_name", "CLIENT_NAME", "name"]),
     address:      pick(h, ["address", "addr", "ADDRESS"]),
@@ -55,7 +107,7 @@ function adaptReportPayload(json, base) {
     pdfUrl:       pick(h, ["report_url", "pdfUrl"]),
   };
 
-  // ✅ กำหนด signatureUrl ให้ชัดเจน (ลำดับความสำคัญ: dataURL > url > fileId->route)
+  // ลายเซ็น: รองรับ dataURL, url ตรง, หรือ fileId -> สร้าง url/fileId ไว้ทั้งคู่
   const sigData = pick(h, ["signatureDataUrl","signature","sigDataUrl"]);
   const sigUrlDirect  = pick(h, ["signature_url","signatureUrl","customerSignatureUrl"]);
   const sigId   = pick(h, ["signature_id","signatureFileId","sigFileId"]);
@@ -63,6 +115,7 @@ function adaptReportPayload(json, base) {
     sigData ||
     sigUrlDirect ||
     (sigId && base ? buildFileUrl(base, sigId) : "");
+  const signatureFileId = sigId || "";
 
   const byZone = new Map();
   const ensure = (z) => {
@@ -86,20 +139,22 @@ function adaptReportPayload(json, base) {
   // photos/files
   (json?.photos || json?.images || json?.files || []).forEach((p) => {
     const row = ensure(p.zone || p.area || p.location);
-    const fid = p.id || p.file_id || p.fileId;
-    const url =
+    const fid = p.id || p.file_id || p.fileId || "";
+    const directUrl =
       p.dataUrl || p.dataURL || p.base64 || p.url ||
       (fid && base ? buildFileUrl(base, fid) : "");
-    if (!url) return; // skip empty
+    // เก็บทั้ง url และ fileId; ถ้า url ไม่เวิร์ค เราจะใช้ fileId โหลดเป็น dataURL
+    if (!directUrl && !fid) return;
     row.photos.push({
-      url,
-      thumb: url,
+      url: directUrl || "",
+      fileId: fid || "",
+      thumb: directUrl || "",
       caption: p.caption || p.name || "",
       taken_at: p.taken_at || p.takenAt || "",
     });
   });
 
-  return { ...payload, signatureUrl, items: Array.from(byZone.values()) };
+  return { ...payload, signatureUrl, signatureFileId, items: Array.from(byZone.values()) };
 }
 
 /* -------------------- fetch helpers -------------------- */
@@ -153,7 +208,7 @@ async function tryValidate(serviceId) {
 
 /* -------------------- SSR -------------------- */
 export async function getServerSideProps(ctx) {
-  const REPORT_VIEW_VERSION = "r6";
+  const REPORT_VIEW_VERSION = "r7";
   const serviceId = String(ctx.params?.serviceId || "");
   const debug = String(ctx.query?.debug || "") === "1";
 
@@ -231,6 +286,7 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
     notes,
     items = [],
     signatureUrl,
+    signatureFileId,
     pdfUrl,
   } = effective;
 
@@ -258,25 +314,10 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
           <div>raw ok: {String(meta.rawOk)}</div>
         </div>
       )}
-      {debug && items?.[0]?.photos?.[0]?.url && (
-        <div className="mb-3 text-xs">
-          sample photo url:{" "}
-          <a className="underline" href={items[0].photos[0].url} target="_blank" rel="noreferrer">
-            {items[0].photos[0].url}
-          </a>
-        </div>
-      )}
-      {debug && signatureUrl && (
-        <div className="mb-3 text-xs">
-          signature url:{" "}
-          <a className="underline" href={signatureUrl} target="_blank" rel="noreferrer">
-            {signatureUrl}
-          </a>
-        </div>
-      )}
 
       <ValidateBanner />
 
+      {/* === ช่าง / ลูกค้า / ที่อยู่ === */}
       <section className="mb-4">
         <div><b>Service ID:</b> {id}</div>
         <div><b>Visit ID:</b> {visitId || "-"}</div>
@@ -293,6 +334,7 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
         )}
       </section>
 
+      {/* === รายละเอียดการทำงาน === */}
       <section className="mb-6">
         <h2 className="text-xl font-semibold mb-2">รายละเอียดการทำงาน</h2>
         {items.length === 0 && <div>- ไม่พบรายการ -</div>}
@@ -321,30 +363,43 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
 
             {!!(it?.photos || []).length && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {it.photos.map((p, i) =>
-                  p?.url ? (
-                    <a
-                      key={i}
-                      href={p.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block rounded overflow-hidden border border-neutral-700"
-                    >
-                      <img loading="lazy" src={p.thumb || p.url} alt={`photo-${i}`} />
-                    </a>
-                  ) : null
-                )}
+                {it.photos.map((p, i) => {
+                  // ถ้ามี url (binary เสิร์ฟได้) ใช้ตรงๆ, ถ้าไม่มีให้ดึงผ่าน file64
+                  if (p?.url) {
+                    return (
+                      <a
+                        key={i}
+                        href={p.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block rounded overflow-hidden border border-neutral-700"
+                      >
+                        <img loading="lazy" src={p.thumb || p.url} alt={`photo-${i}`} />
+                      </a>
+                    );
+                  }
+                  if (p?.fileId) {
+                    return (
+                      <div key={i} className="block rounded overflow-hidden border border-neutral-700">
+                        <ImageFromFileId fileId={p.fileId} alt={`photo-${i}`} className="w-full" />
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
               </div>
             )}
           </div>
         ))}
       </section>
 
+      {/* === หมายเหตุ === */}
       <section className="mb-6">
         <h2 className="text-xl font-semibold mb-2">หมายเหตุ</h2>
         <div className="whitespace-pre-wrap">{notes || "-"}</div>
       </section>
 
+      {/* === ลายเซ็นลูกค้า === */}
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-2">ลายเซ็นลูกค้า</h2>
         {signatureUrl ? (
@@ -354,6 +409,8 @@ export default function ServiceReportPage({ serviceId, data, error, validate, de
             className="bg-white p-2 rounded-md border"
             loading="lazy"
           />
+        ) : signatureFileId ? (
+          <ImageFromFileId fileId={signatureFileId} className="bg-white p-2 rounded-md border" alt="signature" />
         ) : (
           <div>- ไม่มีข้อมูล -</div>
         )}
