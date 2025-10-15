@@ -6,6 +6,7 @@ import AppShell from '@/components/AppShell';
 import { uploadImages, createServiceReport, appendChemicals } from '@/lib/api';
 import ChemicalEditor from '@/components/ChemicalEditor';
 import Link from 'next/link';
+import { CHEMICALS } from "@/lib/chemicals";
 
 const PhotoPicker  = dynamic(() => import('@/components/PhotoPicker'),  { ssr: false });
 const SignaturePad = dynamic(() => import('@/components/SignaturePad'), { ssr: false });
@@ -13,12 +14,16 @@ const SignaturePad = dynamic(() => import('@/components/SignaturePad'), { ssr: f
 const summarizeChems = (chems=[]) =>
   chems.map(c => [c.name, c.qty ? `(${c.qty})` : ''].filter(Boolean).join(' ')).join(' • ');
 
-const CHEM_OPTIONS = [
-  { name: 'Fipronil 0.05%',       link: 'https://example.com/fipronil',     defaultQty: '10 ml' },
-  { name: 'Bendiocarb 80%',       link: 'https://example.com/bendiocarb',   defaultQty: '1 sachet' },
-  { name: 'Imidacloprid 5 SC',    link: 'https://example.com/imidacloprid', defaultQty: '20 ml' },
-  { name: 'Gel Bait (Cockroach)', defaultQty: '1-2 g/จุด' },
-];
+const CHEM_OPTIONS = CHEMICALS.map(c => {
+  const dq = (c.defaultQty != null)
+  ? `${c.defaultQty}${c.unit ? ` ${c.unit}` : ''}`.trim()
+  : undefined;
+  return {
+    name: c.id || c.name,
+    link: c.datasheetUrl || "",
+    defaultQty: dq,
+  };
+});
 
 const FRONT_AREA = 'หน้าบ้าน (ติดเลขที่บ้าน)';
 
@@ -334,15 +339,27 @@ export default function Visit(){
       });
 
       // 7) บันทึกเคมี (POST ?path=append-chemicals)
+      const findChemLink = (n) => {
+        const hit = CHEMICALS.find(x => x.id === n || x.name === n);
+        return hit?.datasheetUrl || "";
+      };
       const chemList = [
         ...(requiredMain.chems || []).map(c => ({
-          zone: FRONT_AREA, name: c.name, qty: c.qty || '', remark: c.remark || '', link: c.link || ''
+          zone: FRONT_AREA,
+          name: c.name,
+          qty:  c.qty || "",
+          remark: c.remark || "",
+          link: c.link || findChemLink(c.name),
         })),
         ...items.flatMap(it =>
           (it.chems || []).map(c => ({
-            zone: it.area || '', name: c.name, qty: c.qty || '', remark: c.remark || '', link: c.link || ''
+            zone: it.area || "",
+            name: c.name,
+            qty:  c.qty || "",
+            remark: c.remark || "",
+            link: c.link || findChemLink(c.name),
           }))
-        )
+        ),
       ];
       if (chemList.length) {
         const chemRes = await appendChemicals(serviceId, chemList); // << ใช้ serviceId ที่ normalize แล้ว
