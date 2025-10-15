@@ -19,22 +19,30 @@ function getExecBases() {
   return Array.from(new Set(cands)); // unique
 }
 
-function adaptReportPayload(json) {
+function adaptReportPayload(json, base) {
   const h = json?.header || {};
-  const svcId = h.service_id || h.logId || "";
+  const pick = (o, arr) => arr.map(k => o?.[k]).find(v => v != null && v !== "") || "";
 
-  const payload = {
-    serviceId: svcId,
-    visitId: h.visit_id || h.visitId || "",
-    createdAt: h.date || h.serviceDate || h.created_at || "",
-    staffName: h.staff_name || h.technicianName || "",
-    customerName: h.customer_name || h.customerName || "",
-    address: h.address || "",
-    notes: h.notes || h.summary || "",
-    signatureUrl: h.signature_url || h.customerSignatureUrl || "",
-    pdfUrl: h.report_url || h.pdfUrl || "",
-  };
+  const serviceId = pick(h, ["service_id","serviceId","SR_ID","logId","idService"]);
+  const visitId   = pick(h, ["visit_id","visitId","VISIT_ID","id","visit"]);
 
+  const createdAt    = pick(h, ["date","serviceDate","created_at","createdAt","VISIT_DATE"]);
+  const staffName    = pick(h, ["staff_name","staffName","teamName","team_name","technicianName","TECH"]);
+  const customerName = pick(h, ["customer_name","customerName","client_name","CLIENT_NAME","name"]);
+  const address      = pick(h, ["address","addr","ADDRESS"]);
+  const notes        = pick(h, ["notes","summary","remark","REMARK"]);
+
+  // ลายเซ็น: รับทั้ง url, dataURL, หรือ fileId -> สร้าง URL ผ่าน /file64
+  const signatureUrlDirect = pick(h, ["signature_url","signatureUrl","customerSignatureUrl"]);
+  const signatureDataUrl   = pick(h, ["signatureDataUrl","signature","sigDataUrl"]);
+  const signatureFileId    = pick(h, ["signature_id","signatureFileId","sigFileId"]);
+
+  const signatureUrl =
+    signatureDataUrl ||
+    signatureUrlDirect ||
+    (signatureFileId && base ? `${base}?route=file64&id=${encodeURIComponent(signatureFileId)}` : "");
+
+  // รวมรายการตามโซน
   const byZone = new Map();
   const ensure = (z) => {
     const key = z || "ทั่วไป";
@@ -42,28 +50,45 @@ function adaptReportPayload(json) {
     return byZone.get(key);
   };
 
-  (json?.items || []).forEach((it) => {
-    const row = ensure(it.zone);
+  (json?.items || json?.chemicals || []).forEach((it) => {
+    const row = ensure(it.zone || it.area || it.location);
     row.chemicals.push({
-      name: it.name || "",
-      qty: it.qty || "",
-      unit: it.unit || "",
-      link: it.link || "",
-      remark: it.remark || "",
+      name:  pick(it, ["name","chemical","chem","product"]),
+      qty:   pick(it, ["qty","quantity"]),
+      unit:  pick(it, ["unit"]),
+      link:  pick(it, ["link","url"]),
+      remark:pick(it, ["remark","note"]),
     });
   });
 
-  (json?.photos || []).forEach((p) => {
-    const row = ensure(p.zone);
+  (json?.photos || json?.images || json?.files || []).forEach((p) => {
+    const row = ensure(p.zone || p.area || p.location);
+    const url =
+      p.dataUrl || p.dataURL || p.base64 ||
+      p.url ||
+      (p.id && base ? `${base}?route=file64&id=${encodeURIComponent(p.id)}` : "") ||
+      (p.file_id && base ? `${base}?route=file64&id=${encodeURIComponent(p.file_id)}` : "");
+
     row.photos.push({
-      url: p.url,
-      thumb: p.url,
-      caption: p.caption || "",
-      taken_at: p.taken_at || "",
+      url,
+      thumb: url,
+      caption: p.caption || p.name || "",
+      taken_at: p.taken_at || p.takenAt || "",
     });
   });
 
-  return { ...payload, items: Array.from(byZone.values()) };
+  return {
+    serviceId,
+    visitId,
+    createdAt,
+    staffName,
+    customerName,
+    address,
+    notes,
+    signatureUrl,
+    pdfUrl: pick(h, ["report_url","pdfUrl"]),
+    items: Array.from(byZone.values()),
+  };
 }
 
 function withTimeout(ms = 10000) {
@@ -131,7 +156,7 @@ export async function getServerSideProps(ctx) {
 
   try {
     const { json, url, base } = await tryFetchReport(serviceId);
-    const data = adaptReportPayload(json);
+    const data = adaptReportPayload(json, base);
     const validate = await tryValidate(serviceId).catch(() => null);
 
     const meta = debug ? { fetchedFrom: base, endpoint: url, rawOk: json?.ok } : null;
@@ -147,8 +172,8 @@ function ClientFallback({ serviceId, onLoaded }) {
     let mounted = true;
     (async () => {
       try {
-        const { json } = await tryFetchReport(serviceId);
-        const data = adaptReportPayload(json);
+        const { json, base } = await tryFetchReport(serviceId);
+        const data = adaptReportPayload(json, base); 
         const validate = await tryValidate(serviceId).catch(() => null);
         if (!mounted) return;
         setState({ loading: false, error: "", data, validate });
