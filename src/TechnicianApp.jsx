@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 const RAW_BASE = (process.env.REACT_APP_GAS_BASE || '').replace(/\/+$/, '');
 const BASE = /\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`;
 const LS_KEY = 'tech-ui';
+const LS_CREATED_MAP = 'tech-created-map';
 const TEAM_OPTIONS = ['', 'A', 'B', 'C', 'D', 'Service'];
 const TEAM_TO_TECH = { A: 'พนา', B: 'นฤมล', C: 'วันดี', D: 'ไพฑูย์' };
 
@@ -33,10 +34,13 @@ export default function TechnicianApp() {
   const [error, setError] = useState('');
   const [creatingId, setCreatingId] = useState(null);
 
+  // เก็บ mapping งานที่ "สร้างรายงานแล้ว" -> serviceId
+  const [createdMap, setCreatedMap] = useState({});
+
   const baseOk = /^https?:\/\/script\.google\.com\/macros\//.test(BASE || '');
   const isService = (team || '').trim().toLowerCase() === 'service';
 
-  // โหลด/บันทึก localStorage
+  // โหลด/บันทึก localStorage (ตั้งค่า UI + auth)
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
@@ -46,12 +50,26 @@ export default function TechnicianApp() {
       if (saved.team) setTeam(saved.team);
       if (saved.technician) setTechnician(saved.technician);
     } catch {}
+    // โหลด createdMap
+    try {
+      const m = JSON.parse(localStorage.getItem(LS_CREATED_MAP) || '{}');
+      setCreatedMap(m || {});
+    } catch {}
   }, []);
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({ date, phone, userId, team, technician }));
     } catch {}
   }, [date, phone, userId, team, technician]);
+
+  // helper: จำว่า card ไหนสร้างแล้ว
+  const rememberCreated = (key, sid) => {
+    setCreatedMap(prev => {
+      const next = { ...prev, [key]: sid };
+      try { localStorage.setItem(LS_CREATED_MAP, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
 
   // ถ้าไม่ได้เลือก Service ไม่ต้องให้เลือกชื่อช่าง
   useEffect(() => { if (!isService && technician) setTechnician(''); }, [isService, technician]);
@@ -91,7 +109,7 @@ export default function TechnicianApp() {
     }
   }
 
-  // === สร้างรายงานใหม่ แล้วพาไปหน้าอ่านอย่างเดียว /report-view/:serviceId ===
+  // === สร้างรายงานใหม่ แล้วพาไปหน้า /report/:serviceId ===
   async function handleCreateReport(job) {
     if (!baseOk) { alert('BASE ไม่ถูกต้อง'); return; }
     const p = onlyDigits(phone);
@@ -140,6 +158,7 @@ export default function TechnicianApp() {
 
       const sid = out.serviceId || out.service_id;
       if (!sid) throw new Error('Missing serviceId in response');
+      rememberCreated(key, sid);
 
       // ➜ ไปหน้า "กรอก/แก้ไข รายงาน"
       navigate(`/report/${encodeURIComponent(sid)}`);
@@ -228,10 +247,20 @@ export default function TechnicianApp() {
           {resp && (
             <>
               <h3 className="group-title">General ({resp.general?.length||0})</h3>
-              <JobList items={resp.general||[]} onCreate={handleCreateReport} creatingId={creatingId} />
+              <JobList
+                items={resp.general||[]}
+                onCreate={handleCreateReport}
+                creatingId={creatingId}
+                createdMap={createdMap}
+              />
 
               <h3 className="group-title">Service ({resp.service?.length||0})</h3>
-              <JobList items={resp.service||[]} onCreate={handleCreateReport} creatingId={creatingId} />
+              <JobList
+                items={resp.service||[]}
+                onCreate={handleCreateReport}
+                creatingId={creatingId}
+                createdMap={createdMap}
+              />
             </>
           )}
           {!resp && !error && !loading && (
@@ -245,12 +274,13 @@ export default function TechnicianApp() {
   );
 }
 
-function JobList({ items, onCreate, creatingId }) {
+function JobList({ items, onCreate, creatingId, createdMap }) {
   if (!items?.length) return <div style={{opacity:.65}}>— ไม่มีรายการ —</div>;
   return (
     <div className="grid">
       {items.map((it) => {
-        const key = jobKey(it);
+        const key  = jobKey(it);
+        const sid  = createdMap?.[key];
         const busy = creatingId === key;
         return (
           <div key={key} className="card">
@@ -262,10 +292,18 @@ function JobList({ items, onCreate, creatingId }) {
               <div className="row"><span className="k">ช่าง</span><span>{it.technician}</span></div>
             )}
             <div className="meta">row #{it.rowIndex}</div>
-            <div style={{marginTop:10}}>
+            <div style={{marginTop:10, display:'flex', gap:8, flexWrap:'wrap'}}>
               <button className="btn-primary" disabled={busy} onClick={()=>onCreate(it)}>
                 {busy ? 'กำลังสร้าง…' : 'สร้างรายงาน'}
               </button>
+              {sid && (
+                <button
+                  className="btn"
+                  onClick={() => window.open(`/report-view/${encodeURIComponent(sid)}`, '_blank', 'noopener,noreferrer')}
+                >
+                  เปิดรายงาน
+                </button>
+              )}
             </div>
           </div>
         );

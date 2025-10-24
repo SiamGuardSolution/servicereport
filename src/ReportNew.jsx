@@ -1,9 +1,14 @@
 // src/ReportNew.jsx (Simple Mode)
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-const LS_KEY = 'tech-ui';
 
+
+const LS_KEY = 'tech-ui';
 const EXEC_BASE = (process.env.REACT_APP_GAS_BASE || "").replace(/\/+$/, "");
+
+const genId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const isChemRowEmpty = (r) =>
+  !((r?.name || r?.qty || r?.zone || r?.link || r?.remark || '').trim());
 
 // ---------- helpers ----------
 async function postJSON(url, payload) {
@@ -30,7 +35,6 @@ function readFileAsBase64(file) {
     fr.readAsDataURL(file);
   });
 }
-const genId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 // ---------- CHEM preset ----------
 const CHEM_LIBRARY = [
@@ -60,13 +64,14 @@ export default function ReportNew() {
   const [uploading, setUploading] = useState(false);
 
   // Simple Chemical Editor (table rows)
+  
+  const [savingChem, setSavingChem] = useState(false);
   const [chemRows, setChemRows] = useState([
     { id: genId(), name:"", qty:"", zone:"", link:"", remark:"" }
   ]);
-  const [savingChem, setSavingChem] = useState(false);
 
-  // Exit control
-  const [didSave, setDidSave] = useState(false);
+  // Exit control 
+  const [savingAll, setSavingAll] = useState(false);
 
   // protect refresh/close while working
   useEffect(() => {
@@ -119,7 +124,7 @@ export default function ReportNew() {
       .report-ui .btn-primary{height:44px;border:0;border-radius:10px;background:#0ea5e9;color:#fff;font-weight:700}
       .report-ui .btn{height:44px;border:1px solid #e5e7eb;border-radius:10px;background:#fff}
       .report-ui .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:16px}
-      .report-ui .footer{position:sticky;bottom:0;background:#fff;padding:10px 12px;border-top:1px solid #ececec;display:flex;gap:8;z-index:5}
+      .report-ui .footer{position:sticky;bottom:0;background:#fff;padding:10px 12px;border-top:1px solid #ececec;display:flex;gap:8px;z-index:5}
     `;
     document.head.appendChild(style);
     return () => { document.head.removeChild(style); };
@@ -150,7 +155,6 @@ export default function ReportNew() {
         if (!out.ok) throw new Error(out.error || `อัปโหลดรูป ${file.name} ไม่สำเร็จ`);
       }
       setPickedFiles([]); setPhotoZone(""); setPhotoCaption("");
-      setDidSave(true);
       await load();
     } catch (e) {
       alert(String(e.message || e));
@@ -173,8 +177,12 @@ export default function ReportNew() {
     const c = findChemByKey(preset);
     setChemRows(r => r.map(x => {
       if (x.id !== id) return x;
-      if (!c) return { ...x, name: preset };
-      return { ...x, name: c.name, qty: x.qty || c.defaultQty, link: x.link || c.link };
+      if (!c) return x;
+      return {
+        name: c.name,
+        qty:  x.qty  || c.defaultQty,
+        link: x.link || c.link
+      };
     }));
   }
   async function saveChemicals() {
@@ -208,7 +216,6 @@ export default function ReportNew() {
         auth_userId: userId,
       });
       if (!out.ok) throw new Error(out.error || "บันทึกสารเคมีไม่สำเร็จ");
-      setDidSave(true);
       // เคลียร์ให้เหลือแถวเดียวว่าง ๆ
       setChemRows([{ id: genId(), name:"", qty:"", zone:"", link:"", remark:"" }]);
       await load();
@@ -216,6 +223,24 @@ export default function ReportNew() {
       alert(String(e.message || e));
     } finally {
       setSavingChem(false);
+    }
+  }
+
+  async function saveAllAndExit() {
+    try {
+      setSavingAll(true);
+      if (pickedFiles.length > 0) {
+        await uploadPhotos();
+      }
+      const hasChem = chemRows.some(r => !isChemRowEmpty(r));
+      if (hasChem) {
+        await saveChemicals();
+      }
+      navigate('/');
+    } catch (e) {
+        alert(String(e.message || e));
+    } finally {
+      setSavingAll(false);
     }
   }
 
@@ -234,8 +259,6 @@ export default function ReportNew() {
   const H = data.header || {};
   const photos = data.photos || [];
   const items  = data.items  || [];
-
-  const canExit = didSave && !uploading && !savingChem;
 
   return (
     <div className="report-ui" style={{maxWidth:960, margin:"0 auto", padding:16}}>
@@ -352,20 +375,12 @@ export default function ReportNew() {
         <button
           type="button"
           className="btn"
-          onClick={()=>window.open(`/report-view/${serviceId}`, "_blank", "noopener,noreferrer")}
-          title="เปิดรายงานอ่านอย่างเดียว"
+          onClick={saveAllAndExit}
+          disabled={uploading || savingChem || savingAll}
+          style={{marginLeft:"auto"}}
+          title="บันทึกรูปที่เลือก + สารเคมี แล้วกลับหน้า Technician"
         >
-          เปิดรายงาน
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={()=>navigate("/")}
-          disabled={!canExit}
-          title={canExit ? "กลับหน้า Technician" : "ต้องอัปโหลดรูปหรือบันทึกสารเคมีก่อน"}
-          style={{marginLeft:"auto"}} // ดันไปขวา
-        >
-          บันทึกและออก
+          {savingAll ? 'กำลังบันทึกทั้งหมด…' : 'บันทึกและออก'}
         </button>
       </div>
     </div>

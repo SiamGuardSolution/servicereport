@@ -71,7 +71,8 @@ function normalizePayload(raw) {
     customerName: H.customerName || H.clientName || d.customerName || d.clientName,
     address: H.address || H.clientAddress || d.address || d.clientAddress,
     phone: H.phone || H.clientPhone || d.phone || d.clientPhone,
-    teamName: H.teamName || H.team || H.technicianName || d.teamName || d.team,
+    teamName: H.teamName || H.team || d.teamName || d.team,
+    technicianName: H.technicianName || d.technicianName || "",
     method: H.method || H.packageName || H.package || d.method || "-",
   };
 
@@ -253,7 +254,10 @@ export default function ServiceReportPage() {
           <div className="kv"><div className="k">ลูกค้า</div><div>{head.customerName || "-"}</div></div>
           <div className="kv"><div className="k">โทร</div><div>{head.phone || "-"}</div></div>
           <div className="kv"><div className="k">ที่อยู่</div><div>{head.address || "-"}</div></div>
-          <div className="kv"><div className="k">ทีม / ช่าง</div><div>{head.teamName || "-"}</div></div>
+          <div className="kv">
+            <div className="k">ทีม / ช่าง</div>
+            <div>{[head.teamName, head.technicianName].filter(Boolean).join(" / ") || "-"}</div>
+          </div>
           <div className="kv"><div className="k">วันที่บริการ</div><div>{fmtDateThai(head.date)}</div></div>
           <div className="kv"><div className="k">แพ็กเกจ</div><div>{head.method || "-"}</div></div>
         </div>
