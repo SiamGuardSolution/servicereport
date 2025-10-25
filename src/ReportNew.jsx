@@ -1,6 +1,6 @@
 // src/ReportNew.jsx (Simple Mode - Combined Group + Save)
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 
 const LS_KEY = 'tech-ui';
 const EXEC_BASE = (process.env.REACT_APP_GAS_BASE || "").replace(/\/+$/, "");
@@ -34,18 +34,25 @@ function readFileAsBase64(file) {
 
 // ---------- CHEM preset ----------
 const CHEM_LIBRARY = [
-  { key:"imidacloprid5cs", name:"Imidacloprid 5% CS", defaultQty:"30 ml/10 L",
-    link:"https://pubchem.ncbi.nlm.nih.gov/compound/Imidacloprid" },
-  { key:"bifenthrin25",    name:"Bifenthrin 2.5%",     defaultQty:"30 ml/10 L",
-    link:"https://pubchem.ncbi.nl.gov/compound/Bifenthrin" },
-  { key:"cypermethrin5",   name:"Cypermethrin 5%",     defaultQty:"50 ml/10 L",
-    link:"https://pubchem.ncbi.nlm.nih.gov/compound/Cypermethrin" },
+  { key:"Imidacloprid 5%", name:"อิมิฟอร์ซ", defaultQty:"1 L/150 L",
+    link:"https://drive.google.com/file/d/1Lza45QqIuqg9P4_-5qZZkp2FCY76RsbU/view" },
+  { key:"Bromadioguard",    name:"โบรมาดิโอการ์ด (เหยื่อหนู)",     defaultQty:"1 unit",
+    link:"https://www.icpladda.com/wp-content/uploads/2019/09/SDS_Bromadioguard_rev_004_5_9_2017.pdf" },
+  { key:"Cypermethrin 10%",   name:"ไซเพอร์การ์ด",     defaultQty:"1 L/100 L",
+    link:"https://www.icpladda.com/wp-content/uploads/2019/09/SDS_Cyperguard_10_EC_Rev_005_6_9_2017.pdf" },
+  { key:"Fipronil 5%",   name:"อีลิมิเนท(ฟิปโฟนิล)",     defaultQty:"1 L/200 L",
+    link:"https://www.icpladda.com/product/%e0%b8%ad%e0%b8%b5%e0%b8%a5%e0%b8%b5%e0%b8%a1%e0%b8%b4%e0%b9%80%e0%b8%99%e0%b8%97/" },
+  { key:"Nemesis land station",   name:"เหยื่อปลวกนอกบ้าน",     defaultQty:"4 units",
+    link:"https://www.chemicalthai.com/product/Nemesis-land-station" },
+  { key:"Termatrix",   name:"เหยื่อปลวกในบ้าน",     defaultQty:"2-4 units",
+    link:"https://www.sherwood.co.th/msds/Termatrix_Termite_Bait.pdf" },
 ];
 const findChemByName = (name) => CHEM_LIBRARY.find(c => c.name === name);
 const findChemByKey  = (key)  => CHEM_LIBRARY.find(c => c.key === key);
 
 export default function ReportNew() {
   const { serviceId } = useParams();
+  const navigate = useNavigate();
 
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
@@ -242,6 +249,7 @@ export default function ReportNew() {
 
       await load(); // รีเฟรชแกลเลอรีที่อัปโหลดแล้ว
       alert("บันทึกข้อมูลเรียบร้อย");
+      navigate("/");
     } catch (e) {
       alert(String(e.message || e));
     } finally {
