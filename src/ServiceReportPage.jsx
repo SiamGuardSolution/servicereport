@@ -1,5 +1,5 @@
 // src/ServiceReportPage.jsx
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 
 /* -------------------- CONFIG / ENV -------------------- */
@@ -31,24 +31,51 @@ function groupBy(arr, getKey) {
   return Array.from(map.entries());
 }
 
-/** แปลง object/ค่าใด ๆ ที่แทนรูปภาพ → URL ที่เปิดดูได้จริง */
+/** แปลง object/ค่า/ลิงก์ ให้กลายเป็น URL ของรูปภาพที่เปิดดูได้จริง */
 function toPublicUrl(p) {
   if (!p) return "";
-  if (typeof p === "string") return p;
 
-  // คีย์ URL ที่พบบ่อย
-  const url =
+  // ถ้าเป็นสตริง → ตรวจสอบ/แปลงให้เรียบร้อย
+  if (typeof p === "string") {
+    return normalizeUrlString(p);
+  }
+
+  // เคสเป็นอ็อบเจ็กต์
+  const rawUrl =
     p.photo_url || p.url || p.viewUrl || p.publicUrl || p.signedUrl ||
-    (p.gcsUrl ? p.gcsUrl : null) ||
-    (p.r2Url ? p.r2Url : null);
+    p.gcsUrl || p.r2Url || "";
+  if (rawUrl) return normalizeUrlString(rawUrl);
 
-  if (url) return url;
-
-  // กรณีมี fileId/id (Google Drive)
+  // เคสมี fileId/id ของ Google Drive
   const id = p.fileId || p.id || p.driveId;
   if (id) return `https://drive.google.com/uc?export=view&id=${id}`;
 
   return "";
+}
+
+/** รองรับลิงก์ Google Drive รูปแบบต่าง ๆ แล้วแปลงเป็น uc?export=view&id=... */
+function normalizeUrlString(s) {
+  if (!s) return "";
+  let url = String(s).trim();
+
+  // บังคับใช้ https
+  if (url.startsWith("http://")) url = "https://" + url.slice(7);
+
+  // 1) https://drive.google.com/file/d/<ID>/view?...
+  let m = url.match(/drive\.google\.com\/file\/d\/([^/]+)\//i);
+  if (m && m[1]) {
+    return `https://drive.google.com/uc?export=view&id=${m[1]}`;
+  }
+
+  // 2) https://drive.google.com/open?id=<ID>
+  m = url.match(/[?&]id=([^&]+)/i);
+  if (/drive\.google\.com/i.test(url) && m && m[1]) {
+    return `https://drive.google.com/uc?export=view&id=${m[1]}`;
+  }
+
+  // 3) https://lh3.googleusercontent.com/... (ใช้ได้อยู่แล้ว)
+  // 4) https://docs.google.com/uc?export=view&id=... (ใช้ได้)
+  return url;
 }
 
 /** ทำความสะอาด/จัดรูปแบบข้อมูลจาก backend ให้มีโครงเดียวกัน */
@@ -125,6 +152,42 @@ export default function ServiceReportPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
+
+  // ---------- Lightbox state (ต้องประกาศก่อนใช้ใน callbacks) ----------
+  const [lbIndex, setLbIndex] = useState(-1);
+  const photosAll = useMemo(() => payload?.photos || [], [payload]);
+  const photosLen = photosAll.length;
+
+  const openLb = useCallback((idx) => {
+    setLbIndex(idx);
+    document.body.style.overflow = "hidden";
+  }, []);
+
+  const closeLb = useCallback(() => {
+    setLbIndex(-1);
+    document.body.style.overflow = "";
+  }, []);
+
+  const prevLb = useCallback((e) => {
+    e?.stopPropagation?.();
+    if (photosLen) setLbIndex(i => (i - 1 + photosLen) % photosLen);
+  }, [photosLen]);
+
+  const nextLb = useCallback((e) => {
+    e?.stopPropagation?.();
+    if (photosLen) setLbIndex(i => (i + 1) % photosLen);
+  }, [photosLen]);
+
+  useEffect(() => {
+    if (lbIndex < 0) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") closeLb();
+      else if (e.key === "ArrowLeft") prevLb(e);
+      else if (e.key === "ArrowRight") nextLb(e);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lbIndex, prevLb, nextLb, closeLb]);
 
   const load = useCallback(async () => {
     if (!serviceId || !baseOk) return;
@@ -273,20 +336,32 @@ export default function ServiceReportPage() {
             <div key={zone} style={{ marginBottom: 16, border: "1px solid #eef", borderRadius: 10, padding: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>โซน: {zone} ({list.length})</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12 }}>
-                {list.map((p, i) => (
-                  <figure key={i} style={{ margin: 0, border: "1px solid #eee", borderRadius: 10, padding: 8 }}>
-                    <div style={{ width: "100%", aspectRatio: "1/1", background: "#f5f5f5", borderRadius: 8, overflow: "hidden" }}>
-                      <img
-                        src={p.url}
-                        alt={p.caption || `photo-${i}`}
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        loading="lazy"
-                        onError={(e)=>{ e.currentTarget.style.opacity="0.4"; }}
-                      />
-                    </div>
-                    {p.caption ? <figcaption style={{ fontSize: 12, marginTop: 6 }}>{p.caption}</figcaption> : null}
-                  </figure>
-                ))}
+                {list.map((p, i) => {
+                  let idxAll = photosAll.indexOf(p);
+                  if (idxAll < 0) idxAll = photosAll.findIndex(x => x.url === p.url);
+                  return (
+                    <figure
+                      key={`${zone}-${i}`}
+                      title="คลิกเพื่อดูภาพใหญ่"
+                      onClick={() => openLb(Math.max(idxAll, 0))}
+                      style={{
+                        margin: 0, border: "1px solid #eee", borderRadius: 10, padding: 8,
+                        cursor: "zoom-in", background: "#fff"
+                      }}
+                    >
+                      <div style={{ width: "100%", aspectRatio: "1/1", background: "#f5f5f5", borderRadius: 8, overflow: "hidden" }}>
+                        <img
+                          src={p.url}
+                          alt={p.caption || `photo-${i}`}
+                          style={{ width: "100%", height: "100%", objectFit: "cover", display:"block" }}
+                          loading="lazy"
+                          onError={(e)=>{ e.currentTarget.style.opacity="0.4"; }}
+                        />
+                      </div>
+                      {p.caption ? <figcaption style={{ fontSize: 12, marginTop: 6 }}>{p.caption}</figcaption> : null}
+                    </figure>
+                  );
+                })}
               </div>
             </div>
           ))
@@ -336,6 +411,78 @@ export default function ServiceReportPage() {
             <img src={signatureUrl} alt="signature" style={{ width: "100%", maxWidth: 420 }} loading="lazy" />
           </div>
         </section>
+      )}
+
+      {/* -------- Lightbox Overlay -------- */}
+      {lbIndex >= 0 && photosLen > 0 && (
+        <div
+          onClick={closeLb}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,.85)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 1000, padding: 16
+          }}
+        >
+          {/* ปิด */}
+          <button
+            onClick={(e)=>{e.stopPropagation(); closeLb();}}
+            aria-label="Close"
+            style={{
+              position:"fixed", top:16, right:16,
+              width:40, height:40, borderRadius:8,
+              background:"rgba(255,255,255,.15)", color:"#fff",
+              border:0, fontSize:24, cursor:"pointer"
+            }}
+          >
+            ×
+          </button>
+
+          {/* ก่อนหน้า / ถัดไป */}
+          {photosLen > 1 && (
+            <>
+              <button
+                onClick={prevLb}
+                aria-label="Previous"
+                style={{
+                  position:"fixed", left:16, top:"50%", transform:"translateY(-50%)",
+                  width:44, height:44, borderRadius:"50%",
+                  background:"rgba(255,255,255,.15)", color:"#fff", border:0, fontSize:24, cursor:"pointer"
+                }}
+              >
+                ‹
+              </button>
+              <button
+                onClick={nextLb}
+                aria-label="Next"
+                style={{
+                  position:"fixed", right:16, top:"50%", transform:"translateY(-50%)",
+                  width:44, height:44, borderRadius:"50%",
+                  background:"rgba(255,255,255,.15)", color:"#fff", border:0, fontSize:24, cursor:"pointer"
+                }}
+              >
+                ›
+              </button>
+            </>
+          )}
+
+          {/* ภาพใหญ่ */}
+          <figure
+            onClick={(e)=>e.stopPropagation()}
+            style={{ margin:0, maxWidth:"90vw", maxHeight:"90vh", display:"grid", gap:8, justifyItems:"center" }}
+          >
+            <img
+              src={photosAll[lbIndex]?.url}
+              alt={photosAll[lbIndex]?.caption || ""}
+              style={{ maxWidth:"90vw", maxHeight:"80vh", objectFit:"contain", borderRadius:12, boxShadow:"0 6px 30px rgba(0,0,0,.5)" }}
+            />
+            {(photosAll[lbIndex]?.caption || photosAll[lbIndex]?.zone) && (
+              <figcaption style={{ color:"#fff", opacity:.9, textAlign:"center", fontSize:14 }}>
+                {photosAll[lbIndex]?.caption || ""}
+                {photosAll[lbIndex]?.zone ? <div style={{opacity:.8, fontSize:12}}>โซน: {photosAll[lbIndex].zone}</div> : null}
+              </figcaption>
+            )}
+          </figure>
+        </div>
       )}
     </div>
   );

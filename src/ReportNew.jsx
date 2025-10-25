@@ -1,5 +1,5 @@
-// src/ReportNew.jsx (Simple Mode - Combined Group + Save)
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+// src/ReportNew.jsx (Simple Mode - Combined Group + Save + Signature)
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
 const LS_KEY = 'tech-ui';
@@ -122,7 +122,7 @@ export default function ReportNew() {
 
   useEffect(() => { load(); }, [load]);
 
-  // inject minimal CSS
+  // inject minimal CSS (+ signature styles)
   useEffect(() => {
     const style = document.createElement("style");
     style.innerHTML = `
@@ -140,6 +140,7 @@ export default function ReportNew() {
       .subtle{border:1px dashed #dcdcdc;border-radius:12px;padding:12px}
       .report-ui .btn:empty{display:none}
       .actions{display:flex;justify-content:flex-end;gap:8px}
+      .sig-box{border:1px dashed #9ca3af;border-radius:12px;background:#fafafa;padding:8px}
     `;
     document.head.appendChild(style);
     return () => { document.head.removeChild(style); };
@@ -175,6 +176,86 @@ export default function ReportNew() {
       };
     }));
   }
+
+  // ====== ลายเซ็นลูกค้า ======
+  const sigRef = useRef(null);
+  const sigWrapRef = useRef(null);
+  const [signing, setSigning] = useState(false);
+  const [isSigned, setIsSigned] = useState(false);
+
+  const resizeCanvas = useCallback(() => {
+    const canvas = sigRef.current;
+    const wrap = sigWrapRef.current;
+    if (!canvas || !wrap) return;
+    const ratio = window.devicePixelRatio || 1;
+    const w = Math.min(640, wrap.clientWidth - 16);
+    const h = Math.max(180, Math.round(w * 0.35));
+    // รักษาภาพเดิม
+    const prev = canvas.toDataURL();
+    const ctx = canvas.getContext("2d");
+    canvas.width = Math.floor(w * ratio);
+    canvas.height = Math.floor(h * ratio);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    // พื้นหลังขาว
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+    // วาดกลับ (ถ้ามี)
+    if (isSigned && prev) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, w, h);
+      img.src = prev;
+    }
+  }, [isSigned]);
+
+  useEffect(() => {
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    return () => window.removeEventListener("resize", resizeCanvas);
+  }, [resizeCanvas]);
+
+  const getPos = (e) => {
+    const canvas = sigRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const t = e.touches?.[0];
+    const x = (t ? t.clientX : e.clientX) - rect.left;
+    const y = (t ? t.clientY : e.clientY) - rect.top;
+    return { x, y };
+  };
+  const startDraw = (e) => {
+    const c = sigRef.current;
+    const ctx = c.getContext("2d");
+    const { x, y } = getPos(e);
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    setSigning(true);
+    setIsSigned(true);
+  };
+  const draw = (e) => {
+    if (!signing) return;
+    const c = sigRef.current;
+    const ctx = c.getContext("2d");
+    const { x, y } = getPos(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+  const endDraw = () => setSigning(false);
+  const clearSignature = () => {
+    const c = sigRef.current;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    setIsSigned(false);
+  };
+  const getSignatureBase64 = () => {
+    const c = sigRef.current;
+    const dataUrl = c?.toDataURL("image/png", 1.0) || "";
+    return dataUrl.split(",")[1] || "";
+  };
 
   // ====== บันทึกสารเคมีทุกชุด → Google Sheet ======
   async function saveChemicalsFromGroups() {
@@ -233,7 +314,41 @@ export default function ReportNew() {
     return { ok:true };
   }
 
-  // ✅ ปุ่ม “บันทึกข้อมูล” — เซฟสารเคมีทุกชุด + อัปโหลดรูปทุกชุด
+  // ====== อัปโหลดลายเซ็นลูกค้า → Google Drive/Sheet ======
+  async function uploadSignatureIfAny() {
+    if (!isSigned) return { ok: true };
+    const base64 = getSignatureBase64();
+    if (!base64) return { ok: true };
+    const { phone, userId } = getAuth();
+
+    // 1) ลองใช้ route เฉพาะลายเซ็น
+    const r1 = await postJSON(`${EXEC_BASE}`, {
+      route: "upload-signature",
+      service_id: serviceId,
+      filename: `signature-${Date.now()}.png`,
+      mimeType: "image/png",
+      data: base64,
+      auth_phone: phone,
+      auth_userId: userId,
+    });
+    if (r1?.ok) return r1;
+
+    // 2) fallback: อัปโหลดเป็นรูปทั่วไป พร้อม zone/caption
+    const r2 = await postJSON(`${EXEC_BASE}`, {
+      route: "upload-photo",
+      service_id: serviceId,
+      filename: `signature-${Date.now()}.png`,
+      mimeType: "image/png",
+      data: base64,
+      zone: "ลายเซ็นลูกค้า",
+      caption: "ลายเซ็นยืนยันการทำงาน",
+      auth_phone: phone,
+      auth_userId: userId,
+    });
+    return r2;
+  }
+
+  // ✅ ปุ่ม “บันทึกข้อมูล” — เซฟสารเคมีทุกชุด + อัปโหลดรูปทุกชุด + อัปโหลดลายเซ็น (ถ้ามี)
   async function saveAll() {
     try {
       setBusy(true);
@@ -245,6 +360,11 @@ export default function ReportNew() {
 
       for (const g of groups) {
         await uploadGroupPhotos(g);
+      }
+
+      const sigRes = await uploadSignatureIfAny();
+      if (sigRes && sigRes.ok === false) {
+        throw new Error(sigRes.error || "อัปโหลดลายเซ็นไม่สำเร็จ");
       }
 
       await load(); // รีเฟรชแกลเลอรีที่อัปโหลดแล้ว
@@ -344,7 +464,7 @@ export default function ReportNew() {
                 multiple
                 hidden
                 onChange={(e)=>{
-                  const files = Array.from(e.target.files || []); 
+                  const files = Array.from(e.target.files || []);
                   setGroups(prev => prev.map(x => x.id === g.id ? { ...x, files } : x));
                 }}
                 disabled={busy}
@@ -408,7 +528,7 @@ export default function ReportNew() {
           </div>
         ))}
 
-        {/* ปุ่มเพิ่มชุด */}
+        {/* ปุ่มเพิ่มชุด + บันทึก */}
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:8}}>
           <button type="button" className="btn" style={{width:"100%"}} onClick={addGroup} disabled={busy}>
             + เพิ่มชุด
@@ -416,6 +536,28 @@ export default function ReportNew() {
           <button type="button" className="btn-primary" style={{width:"100%"}} onClick={saveAll} disabled={busy || loading}>
             {busy ? "กำลังบันทึก…" : "บันทึกข้อมูล"}
           </button>
+        </div>
+      </section>
+
+      {/* ===== ลายเซ็นลูกค้า (ยืนยันการทำงาน) ===== */}
+      <section className="card">
+        <h3 style={{ fontWeight:700, marginBottom:8 }}>ลายเซ็นลูกค้า (ยืนยันการทำงาน)</h3>
+        <div ref={sigWrapRef} className="sig-box">
+          <canvas
+            ref={sigRef}
+            onMouseDown={startDraw}
+            onMouseMove={draw}
+            onMouseUp={endDraw}
+            onMouseLeave={endDraw}
+            onTouchStart={(e)=>{ e.preventDefault(); startDraw(e); }}
+            onTouchMove={(e)=>{ e.preventDefault(); draw(e); }}
+            onTouchEnd={(e)=>{ e.preventDefault(); endDraw(); }}
+            style={{display:"block", width:"100%", height:"220px", borderRadius:8, touchAction:"none", background:"#fff"}}
+          />
+        </div>
+        <div style={{display:"flex", gap:8, marginTop:8, alignItems:"center"}}>
+          <button type="button" className="btn" onClick={clearSignature} disabled={busy}>ล้างลายเซ็น</button>
+          <span className="muted" style={{fontSize:12}}>* ให้ลูกค้าลงลายเซ็นก่อนกด “บันทึกข้อมูล”</span>
         </div>
       </section>
     </div>
