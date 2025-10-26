@@ -31,51 +31,44 @@ function groupBy(arr, getKey) {
   return Array.from(map.entries());
 }
 
-/** แปลง object/ค่า/ลิงก์ ให้กลายเป็น URL ของรูปภาพที่เปิดดูได้จริง */
-function toPublicUrl(p) {
-  if (!p) return "";
-
-  // ถ้าเป็นสตริง → ตรวจสอบ/แปลงให้เรียบร้อย
-  if (typeof p === "string") {
-    return normalizeUrlString(p);
-  }
-
-  // เคสเป็นอ็อบเจ็กต์
-  const rawUrl =
-    p.photo_url || p.url || p.viewUrl || p.publicUrl || p.signedUrl ||
-    p.gcsUrl || p.r2Url || "";
-  if (rawUrl) return normalizeUrlString(rawUrl);
-
-  // เคสมี fileId/id ของ Google Drive
-  const id = p.fileId || p.id || p.driveId;
-  if (id) return `https://drive.google.com/uc?export=view&id=${id}`;
-
+/* ---------- รูปแบบ URL รูปภาพ Google Drive (หลายทางเลือก) ---------- */
+function extractDriveId(url) {
+  if (!url) return "";
+  const s = String(url);
+  let m = s.match(/(?:drive|docs)\.google\.com\/file\/d\/([-\w]{10,})(?:\/|$)/i);
+  if (m && m[1]) return m[1];
+  m = s.match(/[?&]id=([-\w]{10,})/i);
+  if (m && m[1]) return m[1];
+  m = s.match(/\/d\/([-\w]{10,})(?:\/|$)/i);
+  if (m && m[1]) return m[1];
+  // เผื่อกรณีพิเศษ
+  m = s.match(/([-\w]{25,})/);
+  if (m && m[1] && /google\.com/i.test(s)) return m[1];
   return "";
 }
 
-/** รองรับลิงก์ Google Drive รูปแบบต่าง ๆ แล้วแปลงเป็น uc?export=view&id=... */
-function normalizeUrlString(s) {
-  if (!s) return "";
-  let url = String(s).trim();
-
-  // บังคับใช้ https
-  if (url.startsWith("http://")) url = "https://" + url.slice(7);
-
-  // 1) https://drive.google.com/file/d/<ID>/view?...
-  let m = url.match(/drive\.google\.com\/file\/d\/([^/]+)\//i);
-  if (m && m[1]) {
-    return `https://drive.google.com/uc?export=view&id=${m[1]}`;
+function driveCandidates(raw, fallbackId = "") {
+  const id = extractDriveId(raw) || (fallbackId || "");
+  if (id) {
+    // ใช้ thumbnail เป็นตัวเลือกหลัก → เสถียรสุดสำหรับ <img>
+    return [
+      `https://drive.google.com/thumbnail?id=${id}&sz=w2000`,
+      `https://drive.google.com/uc?export=view&id=${id}`,
+      `https://drive.google.com/file/d/${id}/preview`,
+    ];
   }
+  return raw ? [String(raw).trim()] : [];
+}
 
-  // 2) https://drive.google.com/open?id=<ID>
-  m = url.match(/[?&]id=([^&]+)/i);
-  if (/drive\.google\.com/i.test(url) && m && m[1]) {
-    return `https://drive.google.com/uc?export=view&id=${m[1]}`;
-  }
-
-  // 3) https://lh3.googleusercontent.com/... (ใช้ได้อยู่แล้ว)
-  // 4) https://docs.google.com/uc?export=view&id=... (ใช้ได้)
-  return url;
+/** แปลง object/ค่า/ลิงก์ → list ของ URL รูปภาพที่ลองโหลดตามลำดับ */
+function toPublicUrlList(p) {
+  if (!p) return [];
+  const s =
+    typeof p === "string"
+      ? p
+      : (p.photo_url || p.url || p.viewUrl || p.publicUrl || p.signedUrl || p.gcsUrl || p.r2Url || "");
+  const fallbackId = typeof p === "object" ? (p.fileId || p.id || p.driveId) : "";
+  return driveCandidates(s, fallbackId);
 }
 
 /** ทำความสะอาด/จัดรูปแบบข้อมูลจาก backend ให้มีโครงเดียวกัน */
@@ -90,7 +83,6 @@ function normalizePayload(raw) {
   const ITEMS = d.items || d.chemicals || d.report?.items || d.report?.chemicals || [];
   // signature
   const SIG = d.signature || d.sign || d.report?.signature || {};
-  const signatureUrl = SIG.url || SIG.publicUrl || SIG.signedUrl || toPublicUrl(SIG) || d.signatureUrl;
 
   const head = {
     serviceId: H.serviceId || d.serviceId || d.id,
@@ -103,11 +95,15 @@ function normalizePayload(raw) {
     method: H.method || H.packageName || H.package || d.method || "-",
   };
 
-  const photos = (Array.isArray(PHOTOS) ? PHOTOS : []).map((p) => ({
-    zone: p.zone || p.area || "-",
-    caption: p.caption || p.note || "",
-    url: toPublicUrl(p),
-  }));
+  const photos = (Array.isArray(PHOTOS) ? PHOTOS : []).map((p) => {
+    const urls = toPublicUrlList(p);
+    return {
+      zone: p.zone || p.area || "-",
+      caption: p.caption || p.note || "",
+      urls,
+      url: urls[0] || "",
+    };
+  });
 
   const items = (Array.isArray(ITEMS) ? ITEMS : []).map((it) => ({
     zone: it.zone || it.area || "-",
@@ -117,7 +113,32 @@ function normalizePayload(raw) {
     remark: it.remark || it.note || "",
   }));
 
-  return { head, photos, items, signatureUrl };
+  // ลายเซ็น
+  const signatureCandidates = toPublicUrlList(
+    SIG.url || SIG.publicUrl || SIG.signedUrl || d.signatureUrl || SIG
+  );
+
+  return { head, photos, items, signatureUrl: signatureCandidates[0] || "", signatureCandidates };
+}
+
+/* ---------- รูปภาพที่ลองสลับ URL อัตโนมัติเมื่อโหลดล้มเหลว ---------- */
+function SmartImg({ sources, alt, style, ...rest }) {
+  const [idx, setIdx] = React.useState(0);
+  const list = sources && sources.length ? sources : [];
+  const src = list[idx] || "";
+  return (
+    <img
+      src={src}
+      alt={alt}
+      style={style}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (idx + 1 < list.length) setIdx(idx + 1);
+      }}
+      {...rest}
+    />
+  );
 }
 
 /* -------------------- PAGE -------------------- */
@@ -153,7 +174,7 @@ export default function ServiceReportPage() {
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
 
-  // ---------- Lightbox state (ต้องประกาศก่อนใช้ใน callbacks) ----------
+  // ---------- Lightbox state ----------
   const [lbIndex, setLbIndex] = useState(-1);
   const photosAll = useMemo(() => payload?.photos || [], [payload]);
   const photosLen = photosAll.length;
@@ -300,7 +321,7 @@ export default function ServiceReportPage() {
   if (err) return <div style={{ padding: 16, color: "crimson" }}>เกิดข้อผิดพลาด: {err}</div>;
   if (!payload) return <div style={{ padding: 16 }}>ไม่พบข้อมูล</div>;
 
-  const { head, photos, items, signatureUrl } = payload;
+  const { head, photos, items, signatureUrl, signatureCandidates } = payload;
 
   return (
     <div className="report-view" style={{ maxWidth: 960, margin: "0 auto", padding: 16 }}>
@@ -350,12 +371,10 @@ export default function ServiceReportPage() {
                       }}
                     >
                       <div style={{ width: "100%", aspectRatio: "1/1", background: "#f5f5f5", borderRadius: 8, overflow: "hidden" }}>
-                        <img
-                          src={p.url}
+                        <SmartImg
+                          sources={p.urls || [p.url].filter(Boolean)}
                           alt={p.caption || `photo-${i}`}
                           style={{ width: "100%", height: "100%", objectFit: "cover", display:"block" }}
-                          loading="lazy"
-                          onError={(e)=>{ e.currentTarget.style.opacity="0.4"; }}
                         />
                       </div>
                       {p.caption ? <figcaption style={{ fontSize: 12, marginTop: 6 }}>{p.caption}</figcaption> : null}
@@ -408,7 +427,11 @@ export default function ServiceReportPage() {
         <section className="card">
           <h3 style={{ fontWeight: 700, marginBottom: 8 }}>ลายเซ็นลูกค้า</h3>
           <div style={{ border: "1px dashed #cbd5e1", padding: 8, borderRadius: 8 }}>
-            <img src={signatureUrl} alt="signature" style={{ width: "100%", maxWidth: 420 }} loading="lazy" />
+            <SmartImg
+              sources={signatureCandidates || [signatureUrl]}
+              alt="signature"
+              style={{ width: "100%", maxWidth: 420 }}
+            />
           </div>
         </section>
       )}
@@ -470,8 +493,8 @@ export default function ServiceReportPage() {
             onClick={(e)=>e.stopPropagation()}
             style={{ margin:0, maxWidth:"90vw", maxHeight:"90vh", display:"grid", gap:8, justifyItems:"center" }}
           >
-            <img
-              src={photosAll[lbIndex]?.url}
+            <SmartImg
+              sources={photosAll[lbIndex]?.urls || [photosAll[lbIndex]?.url].filter(Boolean)}
               alt={photosAll[lbIndex]?.caption || ""}
               style={{ maxWidth:"90vw", maxHeight:"80vh", objectFit:"contain", borderRadius:12, boxShadow:"0 6px 30px rgba(0,0,0,.5)" }}
             />
