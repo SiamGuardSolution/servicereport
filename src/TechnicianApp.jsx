@@ -16,6 +16,20 @@ function formatYMD(d = new Date()) {
 function jobKey(job){ return `${job.date}|${job.rowIndex}|${job.time}|${job.customer}`; }
 const onlyDigits = (s='') => s.replace(/\D+/g, '');
 
+// === helper: สร้างลิงก์เปิดอ่านรายงานย้อนหลัง ===
+function buildViewUrls(serviceId, userId, phone) {
+  const sid = encodeURIComponent(serviceId || '');
+  const uid = encodeURIComponent((userId || '').trim());
+  const p   = encodeURIComponent(onlyDigits(phone || ''));
+
+  const urlPublic  = `/report-view/${sid}?public=1`;
+  const urlPrivate = `/report-view/${sid}?uid=${uid}&phone=${p}`;
+
+  const hasPrivate = !!(onlyDigits(phone) && String(userId || '').trim());
+  return { urlPublic, urlPrivate, hasPrivate };
+}
+
+
 export default function TechnicianApp() {
   const navigate = useNavigate();
 
@@ -252,6 +266,8 @@ export default function TechnicianApp() {
                 onCreate={handleCreateReport}
                 creatingId={creatingId}
                 createdMap={createdMap}
+                phone={phone}
+                userId={userId}
               />
 
               <h3 className="group-title">Service ({resp.service?.length||0})</h3>
@@ -260,6 +276,8 @@ export default function TechnicianApp() {
                 onCreate={handleCreateReport}
                 creatingId={creatingId}
                 createdMap={createdMap}
+                phone={phone}
+                userId={userId}
               />
             </>
           )}
@@ -274,7 +292,7 @@ export default function TechnicianApp() {
   );
 }
 
-function JobList({ items, onCreate, creatingId, createdMap }) {
+function JobList({ items, onCreate, creatingId, createdMap, phone, userId }) {
   if (!items?.length) return <div style={{opacity:.65}}>— ไม่มีรายการ —</div>;
   return (
     <div className="grid">
@@ -296,14 +314,23 @@ function JobList({ items, onCreate, creatingId, createdMap }) {
               <button className="btn-primary" disabled={busy} onClick={()=>onCreate(it)}>
                 {busy ? 'กำลังสร้าง…' : 'สร้างรายงาน'}
               </button>
-              {sid && (
-                <button
-                  className="btn"
-                  onClick={() => window.open(`/report-view/${encodeURIComponent(sid)}`, '_blank', 'noopener,noreferrer')}
-                >
-                  เปิดรายงาน
-                </button>
-              )}
+              {sid && (() => {
+                const { urlPublic, urlPrivate, hasPrivate } = buildViewUrls(sid, userId, phone);
+                const openUrl = hasPrivate ? urlPrivate : urlPublic;
+                const title   = hasPrivate
+                  ? 'โหมด Private (ตรวจสิทธิ์ด้วย uid+phone)'
+                  : 'โหมด Public (ลิงก์สาธารณะ)';
+
+                return (
+                  <button
+                    className="btn"
+                    title={title}
+                    onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}
+                  >
+                    เปิดรายงาน
+                  </button>
+                );
+              })()}
             </div>
           </div>
         );
