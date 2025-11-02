@@ -134,48 +134,47 @@ export default function TechnicianApp() {
   }
 
   async function loadJobs() {
-    const p = onlyDigits(phone);
-    if (!p || !userId.trim()) { alert('กรุณากรอก เบอร์ + รหัสพนักงาน ให้ครบ'); return; }
-    if (isScriptGoogle) {
-      console.warn('กำลังใช้ script.google.com — client จะส่งเป็น GET + query อัตโนมัติ');
-    }
-    setError(''); setLoading(true); setResp(null);
     try {
-      const payload = {
-        route: 'jobs.list',
-        date,
-        // ส่งสองชื่อเพื่อรองรับทุกเวอร์ชันของ GAS
-        phone: p,
-        userId: userId.trim(),
-        auth_phone: p,
-        auth_userId: userId.trim(),
-        team: team || undefined,
-      };
+      const d = date instanceof Date ? date : new Date(date);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const ymd = `${y}-${m}-${day}`;
 
-      const out = await postJSONSmart(EXEC_BASE, payload);
-      setResp(out);
-      if (!out.ok) {
-        setError(out.error || 'โหลดงานไม่สำเร็จ');
-        return;
+      const p = onlyDigits(phone || '').slice(-10);       // 0617088883 -> 0617088883
+      const uid = String(userId || '').trim();            // T8883
+      const tm  = String(team || '').trim();              // D
+
+      // ประกอบพารามิเตอร์ให้ตรงชื่อที่ GAS ใช้
+      const q = new URLSearchParams({ route: 'jobs.list', date: ymd });
+      if (p.length === 10) q.set('phone', p);
+      if (uid) q.set('userId', uid);
+      if (tm) q.set('team', tm);
+
+      // ป้องกันกรณีหลุดเงื่อนไขจนไม่ยิง request
+      if (![...q.keys()].some(k => ['phone','userId','team'].includes(k))) {
+        console.warn('ไม่มีตัวกรองใดๆ (phone/userId/team) — จะยิงเฉพาะตามวันที่');
+        // ยังให้ยิงตามวันที่ได้ เพื่อเห็นว่า server ตอบอะไรกลับมา
       }
 
-      // เก็บ createdMap อัตโนมัติ
-      try {
-        const next = { ...(createdMap || {}) };
-        const all = [...(out.general || []), ...(out.service || [])];
-        all.forEach((it) => {
-          const sid = it.serviceId || it.service_id || it.reportId || it.visitId || it.sid;
-          if (!sid) return;
-          const k = jobKey(it);
-          next[k] = sid;
-        });
-        setCreatedMap(next);
-        localStorage.setItem(LS_CREATED_MAP, JSON.stringify(next));
-      } catch {}
-    } catch (e) {
-      setError(e.message || 'Failed to fetch');
-    } finally {
-      setLoading(false);
+      const url = `${EXEC_BASE}?${q.toString()}`;
+      console.log('GET', url);
+
+      const res = await fetch(url, { method: 'GET' });
+      const json = await res.json();
+
+      if (!json?.ok) {
+        console.error('jobs.list error:', json);
+        setJobs({ general: [], service: [] });
+        return;
+      }
+      setJobs({
+        general: json.general ?? [],
+        service: json.service ?? [],
+      });
+    } catch (err) {
+      console.error('loadJobs failed:', err);
+      setJobs({ general: [], service: [] });
     }
   }
 
