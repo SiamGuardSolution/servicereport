@@ -13,7 +13,6 @@ const RAW_BASE = (
 const EXEC_BASE = /\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`;
 
 const baseOk = /^https?:\/\/script\.google(?:usercontent)?\.com\/macros\//.test(EXEC_BASE || '');
-const isScriptGoogle = /\/\/script\.google\.com\//.test(EXEC_BASE);
 
 const LS_KEY = 'tech-ui';
 const LS_CREATED_MAP = 'tech-created-map';
@@ -133,7 +132,10 @@ export default function TechnicianApp() {
     alert(JSON.stringify(out, null, 2));
   }
 
+  // ✅ FIXED: ใช้ setResp แทน setJobs และใส่ loading/error
   async function loadJobs() {
+    setError('');
+    setLoading(true);
     try {
       const d = date instanceof Date ? date : new Date(date);
       const y = d.getFullYear();
@@ -141,20 +143,17 @@ export default function TechnicianApp() {
       const day = String(d.getDate()).padStart(2, '0');
       const ymd = `${y}-${m}-${day}`;
 
-      const p = onlyDigits(phone || '').slice(-10);       // 0617088883 -> 0617088883
-      const uid = String(userId || '').trim();            // T8883
-      const tm  = String(team || '').trim();              // D
+      const p = onlyDigits(phone || '').slice(-10); // 10 หลัก
+      const uid = String(userId || '').trim();
+      const tm  = String(team || '').trim();
 
-      // ประกอบพารามิเตอร์ให้ตรงชื่อที่ GAS ใช้
       const q = new URLSearchParams({ route: 'jobs.list', date: ymd });
       if (p.length === 10) q.set('phone', p);
       if (uid) q.set('userId', uid);
       if (tm) q.set('team', tm);
 
-      // ป้องกันกรณีหลุดเงื่อนไขจนไม่ยิง request
       if (![...q.keys()].some(k => ['phone','userId','team'].includes(k))) {
         console.warn('ไม่มีตัวกรองใดๆ (phone/userId/team) — จะยิงเฉพาะตามวันที่');
-        // ยังให้ยิงตามวันที่ได้ เพื่อเห็นว่า server ตอบอะไรกลับมา
       }
 
       const url = `${EXEC_BASE}?${q.toString()}`;
@@ -163,18 +162,32 @@ export default function TechnicianApp() {
       const res = await fetch(url, { method: 'GET' });
       const json = await res.json();
 
-      if (!json?.ok) {
+      if (!json?.ok && !Array.isArray(json?.items)) {
         console.error('jobs.list error:', json);
-        setJobs({ general: [], service: [] });
+        setResp({ general: [], service: [] });
+        setError(json?.error || 'โหลดงานไม่สำเร็จ');
         return;
       }
-      setJobs({
-        general: json.general ?? [],
-        service: json.service ?? [],
-      });
+
+      // รองรับหลายรูปแบบตอบกลับ
+      let general = [], service = [];
+      if (Array.isArray(json?.items)) {
+        general = json.items;
+      } else if (json?.data && (json.data.general || json.data.service)) {
+        general = json.data.general || [];
+        service = json.data.service || [];
+      } else {
+        general = json.general || [];
+        service = json.service || [];
+      }
+
+      setResp({ general, service });
     } catch (err) {
       console.error('loadJobs failed:', err);
-      setJobs({ general: [], service: [] });
+      setResp({ general: [], service: [] });
+      setError(String(err?.message || err));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -209,7 +222,7 @@ export default function TechnicianApp() {
         teamName,
         technicianName,
         customerName: job.customer || '',
-        phoneCustomer: job.contact || '',    // กันสับสนกับ phone (auth)
+        phoneCustomer: job.contact || '',
         address: job.address || '',
         method: '',
         summary: '',
