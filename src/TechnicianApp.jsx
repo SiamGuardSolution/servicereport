@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { openReportForCard } from "./api"; // ⬅️ ใช้ตัวเดียวพอ
+import { callRoute } from './api';
 
 /* -------------------- BASE / ENV -------------------- */
 const LS_BASE_KEY = 'gas_base';
@@ -10,9 +11,11 @@ const RAW_BASE = (
   process.env.REACT_APP_GAS_BASE ||
   ''
 ).replace(/\/+$/, '');
-const EXEC_BASE = /\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`;
+const EXEC_BASE = RAW_BASE
+  ? (/\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`)
+  : '';
 
-const baseOk = /^https?:\/\/script\.google(?:usercontent)?\.com\/macros\//.test(EXEC_BASE || '');
+const baseOk = /^https?:\/\//.test(EXEC_BASE);
 
 const LS_KEY = 'tech-ui';
 const LS_CREATED_MAP = 'tech-created-map';
@@ -24,7 +27,7 @@ console.log('EXEC_BASE =', EXEC_BASE);
 
 /** เส้นทางหน้าแก้ไข/แสดงรายงาน (viewer ภายในแอป) */
 const REPORT_EDITOR_PATH =
-  (process.env.REACT_APP_REPORT_EDITOR_PATH || '/service-report').replace(/\/+$/, '');
+  (process.env.REACT_APP_REPORT_EDITOR_PATH || '/report').replace(/\/+$/, '');
 
 /* -------------------- UTILS -------------------- */
 function formatYMD(d = new Date()) {
@@ -126,6 +129,7 @@ export default function TechnicianApp() {
   useEffect(() => { if (!isService && technician) setTechnician(''); }, [isService, technician]);
 
   async function ping() {
+    if (!EXEC_BASE) { setError('ยังไม่ได้ตั้งค่า REACT_APP_GAS_BASE'); return; }
     setError('');
     const out = await postJSONSmart(EXEC_BASE, { route: 'ping' });
     if (!out.ok) setError('Ping failed: ' + (out.error || 'unknown error'));
@@ -134,6 +138,7 @@ export default function TechnicianApp() {
 
   // ✅ FIXED: ใช้ setResp แทน setJobs และใส่ loading/error
   async function loadJobs() {
+    if (!EXEC_BASE) { setError('ยังไม่ได้ตั้งค่า REACT_APP_GAS_BASE'); return; }
     setError('');
     setLoading(true);
     try {
@@ -193,7 +198,7 @@ export default function TechnicianApp() {
 
   // === สร้างรายงานใหม่ แล้วพาไปหน้าแก้ไข/แสดง ===
   async function handleCreateReport(job) {
-    if (!baseOk) { alert('BASE ไม่ถูกต้อง'); return; }
+    if (!EXEC_BASE) { alert('ยังไม่ได้ตั้งค่า REACT_APP_GAS_BASE'); return; }
     const p = onlyDigits(phone);
     if (!p || !userId.trim()) { alert('กรุณากรอก เบอร์ + รหัสพนักงาน ให้ครบ'); return; }
 
@@ -231,7 +236,7 @@ export default function TechnicianApp() {
         timeHint: job.time || '',
       };
 
-      const out = await postJSONSmart(EXEC_BASE, payload);
+      const out = await callRoute('report/create', payload);
       if (!out?.ok) throw new Error(out?.error || 'create failed');
 
       const sid = out.serviceId || out.service_id;
@@ -308,7 +313,7 @@ export default function TechnicianApp() {
           )}
 
           <div className="actions">
-            <button className="btn-primary" onClick={loadJobs} disabled={!baseOk || loading}>
+            <button className="btn-primary" onClick={loadJobs} disabled={!EXEC_BASE || loading}>
               {loading ? 'กำลังโหลด…' : 'โหลดงาน'}
             </button>
             <button className="btn" onClick={ping}>Ping GAS</button>

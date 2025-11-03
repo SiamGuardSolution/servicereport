@@ -5,53 +5,96 @@ const RAW_BASE = (
   process.env.REACT_APP_GAS_BASE ||
   ''
 ).replace(/\/+$/, '');
-const EXEC_BASE = /\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`;
 
-// เปิด viewer ภายในแอป
-export function getInternalViewerUrlBySid(serviceId) {
-  return serviceId ? `/service-report/${encodeURIComponent(serviceId)}` : '';
+const EXEC_BASE = RAW_BASE
+  ? (/\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`)
+  : '';
+
+function ensureExecBase() {
+  if (!EXEC_BASE) {
+    throw new Error('EXEC_BASE is empty. Set REACT_APP_GAS_BASE or gas_base in localStorage');
+  }
 }
 
-// พยายาม resolve serviceId จากข้อมูลการ์ด (ถ้ายังไม่มี)
+// -------------------------------------------------------------------------------------------------
+// เส้นทางภายในแอป (ให้ตรงกับ Router จริง)
+// -------------------------------------------------------------------------------------------------
+export function getInternalViewerUrlBySid(serviceId) {
+  if (!serviceId) return '';
+  // viewer อ่านอย่างเดียวของลูกค้า
+  return `/report-view/${encodeURIComponent(serviceId)}`;
+  // ถ้าจะเปิดหน้าแก้ไขของช่าง ให้ใช้:
+  // return `/report/${encodeURIComponent(serviceId)}`;
+}
+
+// -------------------------------------------------------------------------------------------------
+// fetch helper
+// -------------------------------------------------------------------------------------------------
+async function fetchJSON(url, options) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { return { ok:false, error:`Invalid JSON: ${text.slice(0,200)}` }; }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Router helper: เลือก GET เฉพาะ route ที่อ่านข้อมูลเท่านั้น, ที่เหลือ POST เสมอ
+// -------------------------------------------------------------------------------------------------
+const SAFE_GET_ROUTES = new Set(['ping', 'jobs.list', 'report/resolve', 'report-by-id']);
+
+export async function callRoute(route, payload = {}) {
+  ensureExecBase();
+  const body = { ...payload, route };
+  const isScriptGoogle = /\/\/script\.google\.com\//.test(EXEC_BASE);
+
+  // อนุญาตให้ GET เฉพาะตอนเป็น script.google.com และ route อยู่ใน SAFE_GET_ROUTES
+  if (isScriptGoogle && SAFE_GET_ROUTES.has(route)) {
+    const qs = new URLSearchParams(
+      Object.entries(body).filter(([, v]) => (v === 0) || (v !== undefined && v !== null && v !== ''))
+    );
+    return fetchJSON(`${EXEC_BASE}?${qs.toString()}`);
+  }
+
+  // นอกนั้น POST เสมอ (กัน 302 ทิ้ง body และป้องกันการเรียก create/update แบบ GET)
+  return fetchJSON(EXEC_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body),
+  });
+}
+
+// ถ้าต้องการใช้จากหน้าอื่น: ตัวช่วยสร้างรายงานโดยตรง
+export async function createReport(payload) {
+  return callRoute('report/create', payload);
+}
+
+// -------------------------------------------------------------------------------------------------
+// พยายาม resolve serviceId จากการ์ด (ถ้ายังไม่มี)
+// -------------------------------------------------------------------------------------------------
 async function resolveServiceIdForCard(card, auth) {
   const payload = {
-    route: 'report/resolve',
     // auth
     phone: auth?.phone || auth?.auth_phone,
     userId: auth?.userId || auth?.auth_userId,
     auth_phone: auth?.phone || auth?.auth_phone,
     auth_userId: auth?.userId || auth?.auth_userId,
     // job hints
-    date: card.date || card.serviceDate,
-    time: card.time || card.timeHint,
-    team: card.team || card.teamName,
-    technician: card.technician || card.technicianName,
-    customer: card.customer || card.customerName,
-    address: card.address,
-    contact: card.contact || card.phoneCustomer,
+    date: card?.date || card?.serviceDate,
+    time: card?.time || card?.timeHint,
+    team: card?.team || card?.teamName,
+    technician: card?.technician || card?.technicianName,
+    customer: card?.customer || card?.customerName,
+    address: card?.address,
+    contact: card?.contact || card?.phoneCustomer,
   };
-
-  // ถ้าเป็น script.google.com ให้ยิงแบบ GET (เลี่ยง 302 ทิ้ง body)
-  const isScriptGoogle = /\/\/script\.google\.com\//.test(EXEC_BASE);
-  if (isScriptGoogle) {
-    const qs = new URLSearchParams(Object.entries(payload).filter(([,v]) => v != null && v !== ''));
-    const r = await fetch(`${EXEC_BASE}?${qs.toString()}`);
-    const t = await r.text();
-    try { return JSON.parse(t); } catch { return { ok:false, error:t }; }
-  } else {
-    const r = await fetch(EXEC_BASE, {
-      method:'POST',
-      headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify(payload),
-    });
-    const t = await r.text();
-    try { return JSON.parse(t); } catch { return { ok:false, error:t }; }
-  }
+  // ใช้ callRoute เพื่อจัดการ GET/POST ให้เหมาะสมอัตโนมัติ
+  return callRoute('report/resolve', payload);
 }
 
+// -------------------------------------------------------------------------------------------------
 // เปิดรายงานจากการ์ด: มี sid → ไปเลย, ไม่มี → resolve แล้วไป
+// -------------------------------------------------------------------------------------------------
 export async function openReportForCard(record, navigate, auth) {
-  // 1) มี sid ติดมากับการ์ด
   const sid =
     record?.serviceId ||
     record?.service_id ||
@@ -63,12 +106,11 @@ export async function openReportForCard(record, navigate, auth) {
     return true;
   }
 
-  // 2) ไม่มี sid → ลอง resolve จาก GAS
   const out = await resolveServiceIdForCard(record, auth);
+  console.log('[openReportForCard] resolve result =', out);
   if (out?.ok && out.serviceId) {
     navigate(getInternalViewerUrlBySid(out.serviceId));
     return true;
   }
-
   return false; // ให้ผู้เรียก alert เอง
 }
