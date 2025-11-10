@@ -364,7 +364,12 @@ function JobList({ items, onCreate, creatingId, createdMap, phone, userId, navig
   return (
     <div className="grid">
       {items.map((it) => {
-        const key = jobKey(it);
+        const key = jobKey({
+          date: it.date || it.serviceDate,
+          rowIndex: it.rowIndex,
+          time: it.time,
+          customer: it.customer || it.customerName
+        });
 
         // ---- หา serviceId ----
         const sid =

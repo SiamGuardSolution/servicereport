@@ -4,8 +4,11 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 
 /* -------------------- CONFIG / ENV -------------------- */
 const RAW_BASE  = (process.env.REACT_APP_GAS_BASE || "").replace(/\/+$/, "");
-const EXEC_BASE = /\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`;
-const baseOk = /^https?:\/\/script\.google(?:usercontent)?\.com\/macros\//.test(EXEC_BASE);
+const EXEC_BASE = RAW_BASE ? (/\/exec$/.test(RAW_BASE) ? RAW_BASE : `${RAW_BASE}/exec`) : "";
+if (!EXEC_BASE) {
+  // แสดงข้อความชัด ๆ หรือโยน error แทนที่จะปล่อยให้ยิงไป /exec
+}
+const baseOk = /^https?:\/\//.test(EXEC_BASE); // หรือแค่เช็คว่าไม่ว่าง
 
 /* -------------------- UTILS -------------------- */
 const LS_KEY = "tech-ui";
@@ -243,8 +246,8 @@ export default function ServiceReportPage() {
       // 1) POST (GAS doPost)
       for (const r of routes) {
         for (const id of idKeys) {
-          const body = { ...basePayload, [id.k]: id.v };
-          const res = await fetch(`${EXEC_BASE}?route=${encodeURIComponent(r)}`, {
+          const body = { ...basePayload, route: r, [id.k]: id.v };
+          const res = await fetch(EXEC_BASE, {
             method: "POST",
             headers: { "Content-Type": "text/plain;charset=utf-8" },
             body: JSON.stringify(body),

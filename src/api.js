@@ -22,7 +22,7 @@ function ensureExecBase() {
 export function getInternalViewerUrlBySid(serviceId) {
   if (!serviceId) return '';
   // viewer อ่านอย่างเดียวของลูกค้า
-  return `/report-view/${encodeURIComponent(serviceId)}`;
+  return `/report-view/${encodeURIComponent(serviceId)}?public=1`;
   // ถ้าจะเปิดหน้าแก้ไขของช่าง ให้ใช้:
   // return `/report/${encodeURIComponent(serviceId)}`;
 }
@@ -80,12 +80,22 @@ async function resolveServiceIdForCard(card, auth) {
     auth_userId: auth?.userId || auth?.auth_userId,
     // job hints
     date: card?.date || card?.serviceDate,
+    serviceDate: card?.serviceDate || card?.date,
     time: card?.time || card?.timeHint,
     team: card?.team || card?.teamName,
+    teamName: card?.teamName || card?.team,
     technician: card?.technician || card?.technicianName,
+    technicianName: card?.technicianName || card?.technician,
     customer: card?.customer || card?.customerName,
+    customerName: card?.customerName || card?.customer,
     address: card?.address,
     contact: card?.contact || card?.phoneCustomer,
+    phoneCustomer: card?.phoneCustomer || card?.contact,
+    rowIndex: card?.rowIndex,
+
+    // คีย์ผสมที่ฝั่ง GAS มักใช้ประกอบเป็น serviceId
+    serviceKey: [card?.date || card?.serviceDate, card?.rowIndex, card?.time, card?.customer || card?.customerName]
+      .filter(Boolean).join('|'),
   };
   // ใช้ callRoute เพื่อจัดการ GET/POST ให้เหมาะสมอัตโนมัติ
   return callRoute('report/resolve', payload);
